@@ -1,0 +1,6 @@
+{
+  "name": "BWT AQA Perla BLE",
+  "domains": ["sensor"],
+  "iot_class": "local_polling",
+  "render_readme": true
+}

@@ -1,0 +1,16 @@
+{
+  "domain": "bwt_aqa_perla_ble",
+  "name": "BWT AQA Perla BLE",
+  "version": "2.0.0",
+  "dependencies": ["bluetooth"],
+  "bluetooth": [
+    {
+      "manufacturer_id": 76,
+      "connectable": true
+    }
+  ],
+  "codeowners": [],
+  "requirements": ["bleak-retry-connector>=3.0.0"],
+  "iot_class": "local_polling",
+  "config_flow": true
+}

@@ -1,0 +1,19 @@
+{
+  "config": {
+    "step": {
+      "confirm": {
+        "title": "BWT AQA Perla BLE detected",
+        "description": "Do you want to add **{name}** (`{address}`) to Home Assistant?"
+      },
+      "user": {
+        "title": "Add a BWT AQA Perla BLE manually",
+        "data": {
+          "address": "Bluetooth address (MAC)"
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "This device is already configured."
+    }
+  }
+}
