@@ -12,9 +12,10 @@ SCAN_INTERVAL = INTERVALLE_RAPIDE_S
 # Nombre de quarts lus en cycle complet (~30h pour couvrir la journée)
 NB_QUARTS_COMPLET = 120
 # Nombre de jours lus en cycle complet
-# 30 jours minimum pour CalcAutonomie() — on prend 60 pour les adoucisseurs
-# à faible fréquence de régénération (1 tous les 7 jours → 30j insuffisant)
-NB_JOURS_COMPLET  = 60
+# L'algorithme CalcAutonomie() nécessite assez d'historique pour simuler
+# l'épuisement du sel. Avec une régénération/semaine et un plein de sel,
+# il peut falloir 500+ jours. On prend 365j comme compromis raisonnable.
+NB_JOURS_COMPLET  = 365
 
 # ── UUIDs BLE réels du protocole BWT AQA Perla ──────────────────────────────
 UUID_SERVICE   = "D973F2E0-B19E-11E2-9E96-0800200C9A66"

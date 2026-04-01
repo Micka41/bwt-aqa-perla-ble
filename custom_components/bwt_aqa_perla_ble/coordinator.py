@@ -31,6 +31,7 @@ from bleak_retry_connector import establish_connection
 from homeassistant.components.bluetooth import async_ble_device_from_address
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.util import dt as dt_util
 
 from .const import (
     DOMAIN,
@@ -189,8 +190,8 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "vérifiez portée BLE ou proxy ESPHome"
             )
 
-        aujourd_hui    = date.today().isoformat()
-        now_hm         = datetime.now().hour * 60 + datetime.now().minute
+        aujourd_hui    = dt_util.now().date().isoformat()
+        now_hm         = dt_util.now().hour * 60 + dt_util.now().minute
         changement_jour = aujourd_hui != self._date_dernier_complet
 
         # Reset minuit — une seule fois par jour
@@ -315,7 +316,7 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             await client.disconnect()
 
         # Assigner les dates aux quarts (ancre = dernier quart terminé)
-        _now     = datetime.now()
+        _now     = dt_util.now()
         _min_arr = (_now.minute // 15) * 15
         ancre_q  = _now.replace(minute=_min_arr, second=0, microsecond=0) - timedelta(minutes=15)
         quarts_dates = [
@@ -324,14 +325,14 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         ]
 
         # Assigner les dates aux jours (ancre = hier)
-        hier_d = date.today() - timedelta(days=1)
+        hier_d = dt_util.now().date() - timedelta(days=1)
         jours_dates = [
             {**j, "date": (hier_d - timedelta(days=(len(jours) - 1 - i))).isoformat()}
             for i, j in enumerate(jours)
         ]
 
         # Recalibrer conso jour depuis les quarts d'aujourd'hui
-        aujourd_hui_str = date.today().isoformat()
+        aujourd_hui_str = dt_util.now().date().isoformat()
         quarts_auj = [q for q in quarts_dates if q["date"] == aujourd_hui_str]
         self._litres_jour_base  = sum(q["litres"] for q in quarts_auj)
         self._index_base        = bcast["index_tab_quart"]
@@ -350,7 +351,7 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._mettre_a_jour_hier_semaine({j["date"]: j for j in jours_dates})
 
         # Moyenne 30 jours glissants (J-1 à J-30, jours consolidés uniquement)
-        hier_d_iso = (date.today() - timedelta(days=1)).isoformat()
+        hier_d_iso = (dt_util.now().date() - timedelta(days=1)).isoformat()
         jours_30 = [
             j["litres"] for j in jours_dates
             if j["date"] <= hier_d_iso   # exclure aujourd'hui non consolidé
@@ -431,7 +432,7 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     def _mettre_a_jour_hier_semaine(self, jours_dict: dict[str, dict]) -> None:
         """Protège contre la non-consolidation du BWT (J-1 consolidé vers 04h00)."""
-        hier_iso    = (date.today() - timedelta(days=1)).isoformat()
+        hier_iso    = (dt_util.now().date() - timedelta(days=1)).isoformat()
         entree_hier = jours_dict.get(hier_iso)
         val_hier    = entree_hier["litres"] if entree_hier else 0
 
@@ -443,7 +444,7 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         elif self._date_hier_stable != hier_iso and self._conso_hier_stable == 0:
             # Pas encore consolidé → chercher dernière valeur non-nulle
             for i in range(1, 8):
-                d = (date.today() - timedelta(days=i)).isoformat()
+                d = (dt_util.now().date() - timedelta(days=i)).isoformat()
                 e = jours_dict.get(d)
                 if e and e["litres"] > 0:
                     self._conso_hier_stable  = e["litres"]
@@ -458,7 +459,7 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._conso_semaine_stable = sum(
                 jours_dict[d]["litres"]
                 for i in range(1, 8)
-                if (d := (date.today() - timedelta(days=i)).isoformat()) in jours_dict
+                if (d := (dt_util.now().date() - timedelta(days=i)).isoformat()) in jours_dict
             )
             _LOGGER.info("Conso semaine : %d L", self._conso_semaine_stable)
         else:
@@ -557,6 +558,6 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             KEY_SALT_AUTONOMY_DAYS:    self._autonomie_jours,
             KEY_SALT_AUTONOMY_WEEKS:   self._autonomie_semaines,
             KEY_AVG_DAILY_30D:         self._avg_daily_30d,
-            KEY_LAST_SYNC:             datetime.now().astimezone(),
+            KEY_LAST_SYNC:             dt_util.now(),
             KEY_FIRMWARE:              self._firmware,
         }
