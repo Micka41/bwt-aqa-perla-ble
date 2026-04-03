@@ -3,7 +3,7 @@
 <a href="https://www.buymeacoffee.com/micka41" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/default-orange.png" alt="Buy Me A Coffee" height="41" width="174"></a>
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
-[![GitHub release](https://img.shields.io/github/release/Micka41/bwt_aqa_perla_ble.svg)](https://github.com/Micka41/bwt_aqa_perla_ble/releases)
+[![GitHub release](https://img.shields.io/github/release/Micka41/bwt-aqa-perla-ble.svg)](https://github.com/Micka41/bwt-aqa-perla-ble/releases)
 ![Maintenance](https://img.shields.io/maintenance/yes/2025.svg)
 
 Native Home Assistant integration for the **BWT AQA Perla** water softener via Bluetooth Low Energy (BLE).
@@ -20,7 +20,7 @@ Native Home Assistant integration for the **BWT AQA Perla** water softener via B
 - 📡 **Bluetooth proxy support** — works with ESPHome proxies (no USB BLE adapter needed)
 - 🔍 **Auto-discovery** — detects the BWT automatically via BLE service UUID
 - 📊 **11 sensors** — salt level, water consumption, regenerations, salt autonomy
-- 🌍 **Multilingual** — French, English, German
+- 🌍 **Multilingual** — French, English, German, Italian
 
 ## Sensors
 
@@ -53,7 +53,7 @@ Native Home Assistant integration for the **BWT AQA Perla** water softener via B
 
 1. Open HACS → **Integrations**
 2. Click ⋮ → **Custom repositories**
-3. Add `https://github.com/Micka41/bwt_aqa_perla_ble` — Category: **Integration**
+3. Add `https://github.com/Micka41/bwt-aqa-perla-ble` — Category: **Integration**
 4. Install **BWT AQA Perla BLE**
 5. Restart Home Assistant
 
