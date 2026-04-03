@@ -53,7 +53,7 @@ Native Home Assistant integration for the **BWT AQA Perla** water softener via B
 
 1. Open HACS → **Integrations**
 2. Click ⋮ → **Custom repositories**
-3. Add `https://github.com/Micka41/bwt_aqa_perla_ble` — Category: **Integration**
+3. Add `https://github.com/Micka41/bwt-aqa-perla-ble` — Category: **Integration**
 4. Install **BWT AQA Perla BLE**
 5. Restart Home Assistant
 
