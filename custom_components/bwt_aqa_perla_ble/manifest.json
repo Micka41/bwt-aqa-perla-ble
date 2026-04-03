@@ -2,7 +2,9 @@
   "domain": "bwt_aqa_perla_ble",
   "name": "BWT AQA Perla BLE",
   "version": "2.0.0",
-  "dependencies": ["bluetooth"],
+  "dependencies": [
+    "bluetooth"
+  ],
   "bluetooth": [
     {
       "manufacturer_id": 76,
@@ -10,7 +12,11 @@
     }
   ],
   "codeowners": [],
-  "requirements": ["bleak-retry-connector>=3.0.0"],
+  "requirements": [
+    "bleak-retry-connector>=3.0.0"
+  ],
   "iot_class": "local_polling",
-  "config_flow": true
+  "config_flow": true,
+  "documentation": "https://github.com/Micka41/bwt-aqa-perla-ble",
+  "issue_tracker": "https://github.com/Micka41/bwt-aqa-perla-ble/issues"
 }
