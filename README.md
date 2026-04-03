@@ -3,14 +3,14 @@
 <a href="https://www.buymeacoffee.com/micka41" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/default-orange.png" alt="Buy Me A Coffee" height="41" width="174"></a>
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
-[![GitHub release](https://img.shields.io/github/release/Micka41/bwt_aqa_perla_ble.svg)](https://github.com/Micka41/bwt_aqa_perla_ble/releases)
+[![GitHub release](https://img.shields.io/github/release/Micka41/bwt-aqa-perla-ble.svg)](https://github.com/Micka41/bwt-aqa-perla-ble/releases)
 ![Maintenance](https://img.shields.io/maintenance/yes/2025.svg)
 
 Native Home Assistant integration for the **BWT AQA Perla** water softener via Bluetooth Low Energy (BLE).
 
 > No MQTT broker required. Works with ESPHome Bluetooth proxies.
 
-![BWT AQA Perla](custom_components/bwt_aqa_perla_ble/icon.png)
+![BWT AQA Perla](custom_components/bwt-aqa-perla-ble/icon.png)
 
 ---
 
@@ -60,8 +60,8 @@ Native Home Assistant integration for the **BWT AQA Perla** water softener via B
 ### Manual
 
 ```bash
-cp -r custom_components/bwt_aqa_perla_ble \
-  /config/custom_components/bwt_aqa_perla_ble
+cp -r custom_components/bwt-aqa-perla-ble \
+  /config/custom_components/bwt-aqa-perla-ble
 ```
 
 Restart Home Assistant.
