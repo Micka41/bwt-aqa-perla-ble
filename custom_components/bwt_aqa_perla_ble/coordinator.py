@@ -200,6 +200,7 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 and self._date_remise_a_zero != aujourd_hui
                 and self._litres_jour_total > 0):
             _LOGGER.info("Minuit — remise à zéro conso jour")
+            self._regens_hier_stable  = self._regens_jour_stable   # ← sauvegarder avant reset
             self._litres_jour_base  = 0
             self._litres_jour_total = 0
             self._index_base        = self._dernier_index_tab_quart
@@ -315,12 +316,16 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         finally:
             await client.disconnect()
 
-        # Assigner les dates aux quarts (ancre = dernier quart terminé)
+        # Assigner les dates ET heures aux quarts (ancre = dernier quart terminé)
         _now     = dt_util.now()
         _min_arr = (_now.minute // 15) * 15
         ancre_q  = _now.replace(minute=_min_arr, second=0, microsecond=0) - timedelta(minutes=15)
         quarts_dates = [
-            {**q, "date": (ancre_q - timedelta(minutes=15 * (len(quarts) - 1 - i))).strftime("%Y-%m-%d")}
+            {
+                **q,
+                "date":  (ancre_q - timedelta(minutes=15 * (len(quarts) - 1 - i))).strftime("%Y-%m-%d"),
+                "heure": (ancre_q - timedelta(minutes=15 * (len(quarts) - 1 - i))).hour,
+            }
             for i, q in enumerate(quarts)
         ]
 
@@ -339,7 +344,7 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._litres_jour_total = self._litres_jour_base
         self._date_dernier_complet = aujourd_hui_str
 
-        # Régénérations du jour : transitions False → True dans les quarts
+        # Régénérations du jour : transitions False → True dans les quarts d'aujourd'hui
         regens, prev = 0, False
         for q in quarts_auj:
             if q["rege"] and not prev:
@@ -431,15 +436,15 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     # ── Stabilisation hier / semaine ─────────────────────────────────
 
     def _mettre_a_jour_hier_semaine(self, jours_dict: dict[str, dict]) -> None:
-        """Protège contre la non-consolidation du BWT (J-1 consolidé vers 04h00)."""
+        """Protège contre la non-consolidation du BWT (J-1 consolidé vers 04h00).
+        Note : _regens_hier_stable est géré au reset minuit, pas ici."""
         hier_iso    = (dt_util.now().date() - timedelta(days=1)).isoformat()
         entree_hier = jours_dict.get(hier_iso)
         val_hier    = entree_hier["litres"] if entree_hier else 0
 
         if val_hier > 0:
-            self._conso_hier_stable  = val_hier
-            self._regens_hier_stable = entree_hier["rege"] if entree_hier else 0
-            self._date_hier_stable   = hier_iso
+            self._conso_hier_stable = val_hier
+            self._date_hier_stable  = hier_iso
             _LOGGER.info("Conso hier consolidée : %d L", self._conso_hier_stable)
         elif self._date_hier_stable != hier_iso and self._conso_hier_stable == 0:
             # Pas encore consolidé → chercher dernière valeur non-nulle
@@ -447,8 +452,7 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 d = (dt_util.now().date() - timedelta(days=i)).isoformat()
                 e = jours_dict.get(d)
                 if e and e["litres"] > 0:
-                    self._conso_hier_stable  = e["litres"]
-                    self._regens_hier_stable = e["rege"]
+                    self._conso_hier_stable = e["litres"]
                     _LOGGER.info(
                         "Conso hier provisoire depuis %s : %d L", d, self._conso_hier_stable
                     )

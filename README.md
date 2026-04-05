@@ -1,7 +1,5 @@
 # BWT AQA Perla BLE — Home Assistant Integration
 
-[![Buy Me A Coffee](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://www.buymeacoffee.com/micka41 "Buy Me A Coffee") [<img style="background:#ccc;border-radius:10px" alt="PayPal" src="https://www.paypalobjects.com/paypal-ui/logos/svg/paypal-color.svg" width="200" height="40px" />](https://paypal.me/mpicaud41)
-
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
 [![GitHub release](https://img.shields.io/github/release/Micka41/bwt-aqa-perla-ble.svg)](https://github.com/Micka41/bwt-aqa-perla-ble/releases)
 [![Maintenance](https://img.shields.io/maintenance/yes/2026.svg)](https://github.com/Micka41/bwt-aqa-perla-ble)
@@ -9,6 +7,8 @@
 [![GitHub issues](https://img.shields.io/github/issues/Micka41/bwt-aqa-perla-ble.svg)](https://github.com/Micka41/bwt-aqa-perla-ble/issues)
 [![GitHub stars](https://img.shields.io/github/stars/Micka41/bwt-aqa-perla-ble.svg)](https://github.com/Micka41/bwt-aqa-perla-ble/stargazers)
 [![Validate](https://github.com/Micka41/bwt-aqa-perla-ble/actions/workflows/validate.yml/badge.svg)](https://github.com/Micka41/bwt-aqa-perla-ble/actions/workflows/validate.yml)
+
+[![Buy Me A Coffee](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://www.buymeacoffee.com/micka41 "Buy Me A Coffee") [<img style="background:#ccc;border-radius:10px" alt="PayPal" src="https://www.paypalobjects.com/paypal-ui/logos/svg/paypal-color.svg" width="200" height="40px" />](https://paypal.me/mpicaud41)
 
 Native Home Assistant integration for the **BWT AQA Perla** water softener via Bluetooth Low Energy (BLE).
 
