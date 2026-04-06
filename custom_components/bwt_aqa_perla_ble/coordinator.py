@@ -379,22 +379,14 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     def _calculer_autonomie(self, bcast: dict, jours_dates: list[dict]) -> None:
         """
-        Réplique exacte de CalcAutonomie() du firmware Java BWT.
+        Calcul de l'autonomie sel basé sur la consommation moyenne de sel par jour.
 
-        Principe : on compte les jours en partant du plus récent et en
-        soustrayant les régénérations réelles jusqu'à épuisement du sel estimé.
+        Formule :
+          sel_consomme_par_jour = (nb_regens_sur_periode × vol_sel_rege) / nb_jours_periode
+          autonomie_jours       = qte_sel_restant / sel_consomme_par_jour
 
-          nb_rege_restant = qte_sel_restant // vol_sel_rege
-          Pour chaque jour (du plus récent au plus ancien) :
-            nb_rege_restant -= rege_du_jour
-            si nb_rege_restant <= 0 → stop
-            sinon nb_jours += 1
-
-        Avantage vs moyenne : fonctionne correctement pour les adoucisseurs
-        à faible fréquence de régénération (ex: 1 regen/semaine → la moyenne
-        sur 7 jours bloquerait l'estimation à 7j max).
-
-        Nécessite NB_JOURS_COMPLET >= 30 pour être fiable.
+        Plus stable que CalcAutonomie() Java qui oscille à chaque régénération.
+        Utilise uniquement les jours avec au moins une régénération pour la moyenne.
         """
         vol_rege = bcast.get("vol_sel_rege", 0) or self._vol_sel_rege
         qte_sel  = bcast.get("qte_sel_restant", 0)
@@ -405,32 +397,31 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._autonomie_semaines = None
             return
 
-        # Trier du plus ancien au plus récent (même ordre que le Java)
         jours_tries = sorted(jours_dates, key=lambda e: e["date"])
-        taille_tab  = len(jours_tries)
-
-        if taille_tab == 0:
+        if len(jours_tries) < 2:
             self._autonomie_jours    = None
             self._autonomie_semaines = None
             return
 
-        nb_rege_restant = qte_sel // vol_rege
-        nb_jours = 0
+        # Total des régénérations sur toute la période disponible
+        total_regens = sum(j["rege"] for j in jours_tries)
+        if total_regens == 0:
+            self._autonomie_jours    = None
+            self._autonomie_semaines = None
+            return
 
-        # Parcours du plus récent au plus ancien
-        for i in range(1, taille_tab + 1):
-            nb_rege_restant -= jours_tries[taille_tab - i]["rege"]
-            if nb_rege_restant <= 0:
-                break
-            nb_jours += 1
+        # Sel consommé par jour en moyenne
+        nb_jours = len(jours_tries)
+        sel_par_jour = (total_regens * vol_rege) / nb_jours
 
-        self._autonomie_jours    = nb_jours
-        self._autonomie_semaines = nb_jours // 7   # division entière, cohérent avec CalcAutonomie() Java
+        jours = round(qte_sel / sel_par_jour)
+        self._autonomie_jours    = jours
+        self._autonomie_semaines = jours // 7
         _LOGGER.info(
-            "Autonomie sel : %d jours (%.1f semaines) "
-            "[sel=%dg  nb_rege_possible=%d  historique=%d jours]",
+            "Autonomie sel : %d jours (%d semaines) "
+            "[sel=%dg  regens=%d/%dj  sel/j=%.1fg]",
             self._autonomie_jours, self._autonomie_semaines,
-            qte_sel, qte_sel // vol_rege, taille_tab,
+            qte_sel, total_regens, nb_jours, sel_par_jour,
         )
 
     # ── Stabilisation hier / semaine ─────────────────────────────────
@@ -555,10 +546,10 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             KEY_SALT_TOTAL_KG:         round(bcast["capa_total_sel"]  / 1000, 2),
             KEY_SALT_ALARM:            bcast["alarme"],
             KEY_CONSUMPTION_TODAY:     self._litres_jour_total,
-            KEY_CONSUMPTION_YESTERDAY: self._conso_hier_stable or None,
-            KEY_CONSUMPTION_WEEK:      self._conso_semaine_stable or None,
+            KEY_CONSUMPTION_YESTERDAY: self._conso_hier_stable if self._date_hier_stable != "" else None,
+            KEY_CONSUMPTION_WEEK:      self._conso_semaine_stable if self._date_hier_stable != "" else None,
             KEY_REGEN_TODAY:           self._regens_jour_stable,
-            KEY_REGEN_YESTERDAY:       self._regens_hier_stable or None,
+            KEY_REGEN_YESTERDAY:       self._regens_hier_stable if self._date_remise_a_zero != "" else None,
             KEY_SALT_AUTONOMY_DAYS:    self._autonomie_jours,
             KEY_SALT_AUTONOMY_WEEKS:   self._autonomie_semaines,
             KEY_AVG_DAILY_30D:         self._avg_daily_30d,

@@ -80,7 +80,7 @@ SENSORS: tuple[BwtSensorEntityDescription, ...] = (
         native_unit_of_measurement=UnitOfVolume.LITERS,
         device_class=SensorDeviceClass.WATER,
         icon="mdi:water-outline",
-        state_class=SensorStateClass.MEASUREMENT,
+        state_class=SensorStateClass.TOTAL,
     ),
     BwtSensorEntityDescription(
         key=KEY_CONSUMPTION_WEEK,
@@ -88,20 +88,13 @@ SENSORS: tuple[BwtSensorEntityDescription, ...] = (
         native_unit_of_measurement=UnitOfVolume.LITERS,
         device_class=SensorDeviceClass.WATER,
         icon="mdi:chart-bar",
-        state_class=SensorStateClass.MEASUREMENT,
+        state_class=SensorStateClass.TOTAL,
     ),
     BwtSensorEntityDescription(
         key=KEY_REGEN_TODAY,
         name="Régénérations aujourd'hui",
         native_unit_of_measurement="régénérations",
         icon="mdi:refresh-circle",
-        state_class=SensorStateClass.MEASUREMENT,
-    ),
-    BwtSensorEntityDescription(
-        key=KEY_REGEN_YESTERDAY,
-        name="Régénérations hier",
-        native_unit_of_measurement="régénérations",
-        icon="mdi:refresh",
         state_class=SensorStateClass.MEASUREMENT,
     ),
     BwtSensorEntityDescription(
@@ -122,7 +115,6 @@ SENSORS: tuple[BwtSensorEntityDescription, ...] = (
         key=KEY_AVG_DAILY_30D,
         name="Consommation moyenne (30 jours)",
         native_unit_of_measurement=UnitOfVolume.LITERS,
-        device_class=SensorDeviceClass.WATER,
         icon="mdi:chart-bell-curve",
         state_class=SensorStateClass.MEASUREMENT,
     ),
