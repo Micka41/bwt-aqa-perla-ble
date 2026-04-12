@@ -1,0 +1,23 @@
+get_total_consumption:
+  name: Get total consumption
+  description: >
+    Reads the complete daily history from the BWT AQA Perla and returns
+    the total water consumption in liters (up to 1825 days).
+    This service triggers a full BLE connection (~30-60s).
+  fields: {}
+
+get_history_consumption:
+  name: Get consumption history
+  description: >
+    Reads the complete daily history and returns water consumption
+    structured by year/month/day (in liters).
+    This service triggers a full BLE connection (~30-60s).
+  fields: {}
+
+get_history_regenerations:
+  name: Get regeneration history
+  description: >
+    Reads the complete daily history and returns the number of regenerations
+    structured by year/month/day.
+    This service triggers a full BLE connection (~30-60s).
+  fields: {}

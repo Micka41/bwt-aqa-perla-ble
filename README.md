@@ -36,8 +36,8 @@ Native Home Assistant integration for the **BWT AQA Perla** water softener via B
 | Consumption today | L | Water softened since midnight |
 | Consumption yesterday | L | Water softened the previous day |
 | Consumption week | L | Water softened over the last 7 days |
+| Consumption average (30 days) | L | Average daily water consumption |
 | Regenerations today | — | Regeneration cycles today |
-| Regenerations yesterday | — | Regeneration cycles yesterday |
 | Salt autonomy (days) | days | Estimated days of salt remaining |
 | Salt autonomy (weeks) | weeks | Estimated weeks of salt remaining |
 | Salt alarm | — | "OK" or "Alarm" |
@@ -102,10 +102,56 @@ Daily consumption is computed as an accumulator (`base` from full cycle + `delta
 
 Yesterday's consumption is only updated once the BWT has consolidated the previous day (~04:00 AM) to avoid showing 0 during the night.
 
+## Services
+ 
+Three services are available to retrieve the complete history from the BWT device. Each service triggers a full BLE connection (~30-60 seconds).
+ 
+### `bwt_aqa_perla_ble.get_total_consumption`
+ 
+Returns the total water consumption in liters since the device was put into service (up to 1825 days).
+ 
+```json
+{
+  "total_litres": 125430,
+  "nb_jours": 365,
+  "depuis": "2024-04-07",
+  "jusqu_au": "2025-04-06"
+}
+```
+ 
+### `bwt_aqa_perla_ble.get_history_consumption`
+ 
+Returns daily water consumption (in liters) structured by year/month/day.
+ 
+```json
+{
+  "2024": {
+    "04": { "07": 120, "08": 95, "09": 110 },
+    "05": { "01": 130 }
+  }
+}
+```
+ 
+### `bwt_aqa_perla_ble.get_history_regenerations`
+ 
+Returns the number of regeneration cycles structured by year/month/day.
+ 
+```json
+{
+  "2024": {
+    "04": { "07": 0, "08": 1, "09": 0 },
+    "05": { "01": 0 }
+  }
+}
+```
+ 
+> These services can be called from **Developer Tools → Services** in Home Assistant or from an automation.
+
 ## Compatibility
 
 Tested on:
-- BWT AQA Perla Silk (A22X firmware)
+- BWT AQA Perla 10
+- BWT Calypso 2
 
 Should work with other BWT AQA Perla variants. Please open an issue if you have a different model and it doesn't work.
 

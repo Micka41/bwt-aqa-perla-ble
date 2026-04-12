@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import date, datetime, timedelta
+from datetime import timedelta
 from typing import Any
 
 from bleak import BleakClient
@@ -47,6 +47,7 @@ from .const import (
     ADRESSE_TAB_QUART,
     ADRESSE_TAB_JOUR,
     MAX_TAB_QUART,
+    MAX_TAB_JOUR,
     BLE_CONNECT_TIMEOUT,
     BLE_NOTIFY_SILENCE,
     BLE_NOTIFY_TIMEOUT,
@@ -58,7 +59,6 @@ from .const import (
     KEY_CONSUMPTION_YESTERDAY,
     KEY_CONSUMPTION_WEEK,
     KEY_REGEN_TODAY,
-    KEY_REGEN_YESTERDAY,
     KEY_SALT_AUTONOMY_DAYS,
     KEY_SALT_AUTONOMY_WEEKS,
     KEY_AVG_DAILY_30D,
@@ -97,7 +97,6 @@ def _decode_broadcast(buf: bytes) -> dict[str, Any]:
         "vol_sel_rege":     _get_word_le(buf, 8),
         "capa_total_sel":   capa_total,
         "alarme":           bool(flags & 0x01),
-        "loop_quart":       bool(flags & 0x02),
         "loop_jour":        bool(flags & 0x04),
         "pourcentage_sel":  pct,
         "version":          f"A22X V{buf[13]}.{buf[14]}",
@@ -174,9 +173,8 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._avg_daily_30d: float | None = None
 
         # Autonomie sel
-        self._vol_sel_rege:         int = 0   # grammes de sel par régénération
-        self._autonomie_jours:      int | None = None
-        self._autonomie_semaines:   float | None = None
+        self._autonomie_jours:    int | None = None
+        self._autonomie_semaines: int | None = None
 
     # ── Hook principal ────────────────────────────────────────────────
 
@@ -190,8 +188,9 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "vérifiez portée BLE ou proxy ESPHome"
             )
 
-        aujourd_hui    = dt_util.now().date().isoformat()
-        now_hm         = dt_util.now().hour * 60 + dt_util.now().minute
+        now            = dt_util.now()
+        aujourd_hui    = now.date().isoformat()
+        now_hm         = now.hour * 60 + now.minute
         changement_jour = aujourd_hui != self._date_dernier_complet
 
         # Reset minuit — une seule fois par jour
@@ -246,8 +245,6 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._dernier_index_tab_quart = bcast["index_tab_quart"]
             if bcast["version"]:
                 self._firmware = bcast["version"]
-            if bcast["vol_sel_rege"] > 0:
-                self._vol_sel_rege = bcast["vol_sel_rege"]
 
             # Quarts nouveaux depuis _index_base
             idx = bcast["index_tab_quart"]
@@ -291,25 +288,47 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if bcast["version"]:
                 self._firmware = bcast["version"]
 
-            # Quarts
+            # Quarts — gestion du buffer circulaire (wrap tous les 30 jours)
             idx_q = bcast["index_tab_quart"]
-            nb_q  = min(idx_q, NB_QUARTS_COMPLET)
+            nb_q  = min(NB_QUARTS_COMPLET, MAX_TAB_QUART)
             quarts: list[dict] = []
-            if nb_q > 0:
+            if idx_q >= nb_q:
+                # Cas normal : pas de wrap dans la fenêtre
                 quarts = await self._lire_blocs(
-                    client, ADRESSE_TAB_QUART,
-                    idx_q - nb_q, nb_q, is_quart=True
+                    client, ADRESSE_TAB_QUART, idx_q - nb_q, nb_q, is_quart=True
                 )
+            else:
+                # Wrap (inclut idx_q == 0) : lire en deux parties
+                nb_partie1 = nb_q - idx_q
+                debut1 = MAX_TAB_QUART - nb_partie1
+                quarts = await self._lire_blocs(
+                    client, ADRESSE_TAB_QUART, debut1, nb_partie1, is_quart=True
+                )
+                if idx_q > 0:
+                    quarts += await self._lire_blocs(
+                        client, ADRESSE_TAB_QUART, 0, idx_q, is_quart=True
+                    )
 
-            # Jours
+            # Jours — gestion du buffer circulaire (wrap après 5 ans)
             idx_j = bcast["index_tab_jour"]
-            nb_j  = min(idx_j, NB_JOURS_COMPLET)
+            nb_j  = min(NB_JOURS_COMPLET, MAX_TAB_JOUR)
             jours: list[dict] = []
-            if nb_j > 0:
+            if idx_j >= nb_j:
+                # Cas normal
                 jours = await self._lire_blocs(
-                    client, ADRESSE_TAB_JOUR,
-                    idx_j - nb_j, nb_j, is_quart=False
+                    client, ADRESSE_TAB_JOUR, idx_j - nb_j, nb_j, is_quart=False
                 )
+            else:
+                # Wrap (inclut idx_j == 0)
+                nb_partie1 = nb_j - idx_j
+                debut1 = MAX_TAB_JOUR - nb_partie1
+                jours = await self._lire_blocs(
+                    client, ADRESSE_TAB_JOUR, debut1, nb_partie1, is_quart=False
+                )
+                if idx_j > 0:
+                    jours += await self._lire_blocs(
+                        client, ADRESSE_TAB_JOUR, 0, idx_j, is_quart=False
+                    )
 
             await client.write_gatt_char(UUID_WRITE, _build_break_cmd())
             await client.stop_notify(UUID_READ1)
@@ -321,11 +340,7 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         _min_arr = (_now.minute // 15) * 15
         ancre_q  = _now.replace(minute=_min_arr, second=0, microsecond=0) - timedelta(minutes=15)
         quarts_dates = [
-            {
-                **q,
-                "date":  (ancre_q - timedelta(minutes=15 * (len(quarts) - 1 - i))).strftime("%Y-%m-%d"),
-                "heure": (ancre_q - timedelta(minutes=15 * (len(quarts) - 1 - i))).hour,
-            }
+            {**q, "date": (ancre_q - timedelta(minutes=15 * (len(quarts) - 1 - i))).strftime("%Y-%m-%d")}
             for i, q in enumerate(quarts)
         ]
 
@@ -375,6 +390,112 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         return self._build_result(bcast)
 
+    # ── Service : historique complet ─────────────────────────────────
+
+    async def get_full_history(self) -> dict:
+        """
+        Lit TOUT l'historique journalier du BWT (jusqu'à 1825 jours = 5 ans)
+        et retourne un JSON structuré par année/mois/jour.
+
+        Format de réponse :
+        {
+          "total_litres": 123456,
+          "nb_jours": 365,
+          "historique": {
+            "2024": {
+              "01": {
+                "01": {"litres": 450, "regens": 0},
+                ...
+              }
+            }
+          }
+        }
+        """
+        ble_device = async_ble_device_from_address(
+            self.hass, self.address, connectable=True
+        )
+        if ble_device is None:
+            raise Exception(
+                f"BWT AQA Perla ({self.address}) introuvable — "
+                "vérifiez portée BLE ou proxy ESPHome"
+            )
+
+        _LOGGER.info("Service get_full_history — lecture de l'historique complet…")
+
+        client = await establish_connection(
+            BleakClient,
+            ble_device,
+            self.address,
+            max_attempts=3,
+            ctor_kwargs={"timeout": BLE_CONNECT_TIMEOUT},
+        )
+        try:
+            await self._start_notify(client)
+            await client.read_gatt_char(UUID_OTHER)
+
+            bcast = _decode_broadcast(await client.read_gatt_char(UUID_BROADCAST))
+
+            # Lire TOUT l'historique journalier (jusqu'à MAX_TAB_JOUR)
+            idx_j = bcast["index_tab_jour"]
+            nb_j  = min(idx_j, MAX_TAB_JOUR)
+            jours: list[dict] = []
+            if idx_j >= nb_j and nb_j > 0:
+                jours = await self._lire_blocs(
+                    client, ADRESSE_TAB_JOUR, idx_j - nb_j, nb_j, is_quart=False
+                )
+            elif idx_j < nb_j:
+                nb_partie1 = nb_j - idx_j
+                debut1 = MAX_TAB_JOUR - nb_partie1
+                jours = await self._lire_blocs(
+                    client, ADRESSE_TAB_JOUR, debut1, nb_partie1, is_quart=False
+                )
+                if idx_j > 0:
+                    jours += await self._lire_blocs(
+                        client, ADRESSE_TAB_JOUR, 0, idx_j, is_quart=False
+                    )
+
+            await client.write_gatt_char(UUID_WRITE, _build_break_cmd())
+            await client.stop_notify(UUID_READ1)
+        finally:
+            await client.disconnect()
+
+        # Assigner les dates (ancre = hier)
+        from datetime import timedelta as _td
+        hier_d = dt_util.now().date() - _td(days=1)
+        jours_dates = [
+            {
+                **j,
+                "date": (hier_d - _td(days=(len(jours) - 1 - i))).isoformat()
+            }
+            for i, j in enumerate(jours)
+        ]
+
+        # Construire le JSON structuré année/mois/jour
+        historique: dict = {}
+        total_litres = 0
+
+        for j in jours_dates:
+            annee, mois, jour = j["date"].split("-")
+            litres = j["litres"]
+            regens = j["rege"]
+            total_litres += litres
+
+            historique.setdefault(annee, {}).setdefault(mois, {})[jour] = {
+                "litres": litres,
+                "regens": regens,
+            }
+
+        _LOGGER.info(
+            "get_full_history — %d jours, total %d L",
+            len(jours_dates), total_litres,
+        )
+
+        return {
+            "total_litres": total_litres,
+            "nb_jours":     len(jours_dates),
+            "historique":   historique,
+        }
+
     # ── Calcul de l'autonomie sel ─────────────────────────────────────
 
     def _calculer_autonomie(self, bcast: dict, jours_dates: list[dict]) -> None:
@@ -388,7 +509,7 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         Plus stable que CalcAutonomie() Java qui oscille à chaque régénération.
         Utilise uniquement les jours avec au moins une régénération pour la moyenne.
         """
-        vol_rege = bcast.get("vol_sel_rege", 0) or self._vol_sel_rege
+        vol_rege = bcast.get("vol_sel_rege", 0)
         qte_sel  = bcast.get("qte_sel_restant", 0)
 
         if vol_rege <= 0 or qte_sel <= 0:
@@ -537,6 +658,93 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     continue   # encore actif
                 break          # silence prolongé = bloc terminé
 
+    # ── Services HA ───────────────────────────────────────────────────
+
+    async def _read_full_history(self) -> list[dict]:
+        """Lit tout l'historique journalier disponible (jusqu'à 1825 jours)."""
+        from .const import MAX_TAB_JOUR as _MAX_TAB_JOUR
+
+        ble_device = async_ble_device_from_address(
+            self.hass, self.address, connectable=True
+        )
+        if ble_device is None:
+            raise ValueError(f"BWT AQA Perla ({self.address}) introuvable")
+
+        from bleak_retry_connector import establish_connection as _establish
+        client = await _establish(
+            BleakClient, ble_device, self.address,
+            max_attempts=3, ctor_kwargs={"timeout": BLE_CONNECT_TIMEOUT},
+        )
+        try:
+            await self._start_notify(client)
+            await client.read_gatt_char(UUID_OTHER)
+            bcast = _decode_broadcast(await client.read_gatt_char(UUID_BROADCAST))
+
+            idx_j     = bcast["index_tab_jour"]
+            loop_jour = bcast["loop_jour"]
+
+            if loop_jour:
+                # Buffer plein (>5 ans) : lire les 1825 jours en 2 parties
+                # idx_j pointe sur le plus ancien → partie 1 : idx_j..fin, partie 2 : 0..idx_j-1
+                nb_j = MAX_TAB_JOUR
+                jours = await self._lire_blocs(
+                    client, ADRESSE_TAB_JOUR, idx_j, MAX_TAB_JOUR - idx_j, is_quart=False
+                )
+                if idx_j > 0:
+                    jours += await self._lire_blocs(
+                        client, ADRESSE_TAB_JOUR, 0, idx_j, is_quart=False
+                    )
+            elif idx_j > 0:
+                # Buffer non plein : lire idx_j entrées depuis le début
+                jours = await self._lire_blocs(
+                    client, ADRESSE_TAB_JOUR, 0, idx_j, is_quart=False
+                )
+            else:
+                jours = []
+
+            await client.write_gatt_char(UUID_WRITE, _build_break_cmd())
+            await client.stop_notify(UUID_READ1)
+        finally:
+            await client.disconnect()
+
+        # Assigner les dates (ancre = hier)
+        from homeassistant.util import dt as _dt
+        hier_d = _dt.now().date() - timedelta(days=1)
+        return [
+            {**j, "date": (hier_d - timedelta(days=(len(jours) - 1 - i))).isoformat()}
+            for i, j in enumerate(jours)
+        ]
+
+    async def service_total_consumption(self) -> dict:
+        """Service get_total_consumption — total en litres depuis l'historique complet."""
+        jours = await self._read_full_history()
+        total = sum(j["litres"] for j in jours)
+        _LOGGER.info("Total historique : %d L sur %d jours", total, len(jours))
+        return {
+            "total_litres": total,
+            "nb_jours": len(jours),
+            "depuis": jours[0]["date"] if jours else None,
+            "jusqu_au": jours[-1]["date"] if jours else None,
+        }
+
+    async def service_history_consumption(self) -> dict:
+        """Service get_history_consumption — consommation par année/mois/jour."""
+        jours = await self._read_full_history()
+        result: dict = {}
+        for j in jours:
+            annee, mois, jour = j["date"].split("-")
+            result.setdefault(annee, {}).setdefault(mois, {})[jour] = j["litres"]
+        return result
+
+    async def service_history_regenerations(self) -> dict:
+        """Service get_history_regenerations — régénérations par année/mois/jour."""
+        jours = await self._read_full_history()
+        result: dict = {}
+        for j in jours:
+            annee, mois, jour = j["date"].split("-")
+            result.setdefault(annee, {}).setdefault(mois, {})[jour] = j["rege"]
+        return result
+
     # ── Construction du résultat HA ───────────────────────────────────
 
     def _build_result(self, bcast: dict) -> dict[str, Any]:
@@ -549,7 +757,6 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             KEY_CONSUMPTION_YESTERDAY: self._conso_hier_stable if self._date_hier_stable != "" else None,
             KEY_CONSUMPTION_WEEK:      self._conso_semaine_stable if self._date_hier_stable != "" else None,
             KEY_REGEN_TODAY:           self._regens_jour_stable,
-            KEY_REGEN_YESTERDAY:       self._regens_hier_stable if self._date_remise_a_zero != "" else None,
             KEY_SALT_AUTONOMY_DAYS:    self._autonomie_jours,
             KEY_SALT_AUTONOMY_WEEKS:   self._autonomie_semaines,
             KEY_AVG_DAILY_30D:         self._avg_daily_30d,
