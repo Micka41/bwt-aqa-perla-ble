@@ -103,26 +103,26 @@ Daily consumption is computed as an accumulator (`base` from full cycle + `delta
 Yesterday's consumption is only updated once the BWT has consolidated the previous day (~04:00 AM) to avoid showing 0 during the night.
 
 ## Services / Actions
- 
+
 Three services are available to retrieve the complete history from the BWT device. Each service triggers a full BLE connection (~30-60 seconds).
- 
+
 ### `bwt_aqa_perla_ble.get_total_consumption`
- 
+
 Returns the total water consumption in liters since the device was put into service (up to 1825 days).
- 
+
 ```json
 {
-  "total_litres": 125430,
-  "nb_jours": 365,
-  "depuis": "2024-04-07",
-  "jusqu_au": "2025-04-06"
+  "total_liters": 125430,
+  "days_count": 365,
+  "from_date": "2024-04-07",
+  "to_date": "2025-04-06"
 }
 ```
- 
+
 ### `bwt_aqa_perla_ble.get_history_consumption`
- 
+
 Returns daily water consumption (in liters) structured by year/month/day.
- 
+
 ```json
 {
   "2024": {
@@ -131,11 +131,11 @@ Returns daily water consumption (in liters) structured by year/month/day.
   }
 }
 ```
- 
+
 ### `bwt_aqa_perla_ble.get_history_regenerations`
- 
+
 Returns the number of regeneration cycles structured by year/month/day.
- 
+
 ```json
 {
   "2024": {
@@ -144,7 +144,7 @@ Returns the number of regeneration cycles structured by year/month/day.
   }
 }
 ```
- 
+
 > These services can be called from **Developer Tools → Services** in Home Assistant or from an automation.
 
 ## Compatibility

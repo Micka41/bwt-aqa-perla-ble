@@ -15,5 +15,24 @@
     "abort": {
       "already_configured": "Cet appareil est déjà configuré."
     }
+  },
+  "entity": {
+    "sensor": {
+      "salt_pct":             { "name": "Niveau de sel" },
+      "salt_kg":              { "name": "Sel restant" },
+      "salt_total_kg":        { "name": "Capacité sel" },
+      "consumption_today":    { "name": "Consommation aujourd'hui" },
+      "consumption_yesterday":{ "name": "Consommation hier" },
+      "consumption_week":     { "name": "Consommation 7 jours" },
+      "regen_today":          { "name": "Régénérations aujourd'hui" },
+      "salt_autonomy_days":   { "name": "Autonomie sel (jours)" },
+      "salt_autonomy_weeks":  { "name": "Autonomie sel (semaines)" },
+      "avg_daily_30d":        { "name": "Consommation moyenne 30 jours" },
+      "last_sync":            { "name": "Dernière synchronisation" },
+      "firmware":             { "name": "Firmware" }
+    },
+    "binary_sensor": {
+      "salt_alarm": { "name": "Alarme sel" }
+    }
   }
 }

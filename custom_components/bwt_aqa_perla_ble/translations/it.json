@@ -15,5 +15,24 @@
     "abort": {
       "already_configured": "Questo dispositivo è già configurato."
     }
+  },
+  "entity": {
+    "sensor": {
+      "salt_pct":             { "name": "Livello sale" },
+      "salt_kg":              { "name": "Sale rimanente" },
+      "salt_total_kg":        { "name": "Capacità sale" },
+      "consumption_today":    { "name": "Consumo oggi" },
+      "consumption_yesterday":{ "name": "Consumo ieri" },
+      "consumption_week":     { "name": "Consumo 7 giorni" },
+      "regen_today":          { "name": "Rigenerazioni oggi" },
+      "salt_autonomy_days":   { "name": "Autonomia sale (giorni)" },
+      "salt_autonomy_weeks":  { "name": "Autonomia sale (settimane)" },
+      "avg_daily_30d":        { "name": "Consumo medio giornaliero 30 giorni" },
+      "last_sync":            { "name": "Ultima sincronizzazione" },
+      "firmware":             { "name": "Firmware" }
+    },
+    "binary_sensor": {
+      "salt_alarm": { "name": "Allarme sale" }
+    }
   }
 }

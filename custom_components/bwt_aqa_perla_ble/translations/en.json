@@ -15,5 +15,24 @@
     "abort": {
       "already_configured": "This device is already configured."
     }
+  },
+  "entity": {
+    "sensor": {
+      "salt_pct":             { "name": "Salt level" },
+      "salt_kg":              { "name": "Salt remaining" },
+      "salt_total_kg":        { "name": "Salt capacity" },
+      "consumption_today":    { "name": "Consumption today" },
+      "consumption_yesterday":{ "name": "Consumption yesterday" },
+      "consumption_week":     { "name": "Consumption 7 days" },
+      "regen_today":          { "name": "Regenerations today" },
+      "salt_autonomy_days":   { "name": "Salt autonomy (days)" },
+      "salt_autonomy_weeks":  { "name": "Salt autonomy (weeks)" },
+      "avg_daily_30d":        { "name": "Average daily consumption 30 days" },
+      "last_sync":            { "name": "Last sync" },
+      "firmware":             { "name": "Firmware" }
+    },
+    "binary_sensor": {
+      "salt_alarm": { "name": "Salt alarm" }
+    }
   }
 }

@@ -184,7 +184,7 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         if ble_device is None:
             raise UpdateFailed(
-                f"BWT AQA Perla ({self.address}) introuvable — "
+                f"BWT AQA Perla ({self.address}) not found — "
                 "vérifiez portée BLE ou proxy ESPHome"
             )
 
@@ -198,7 +198,7 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 and self._date_dernier_complet != ""
                 and self._date_remise_a_zero != aujourd_hui
                 and self._litres_jour_total > 0):
-            _LOGGER.info("Minuit — remise à zéro conso jour")
+            _LOGGER.info("Midnight — resetting daily consumption")
             self._regens_hier_stable  = self._regens_jour_stable   # ← sauvegarder avant reset
             self._litres_jour_base  = 0
             self._litres_jour_total = 0
@@ -215,7 +215,7 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         try:
             if faire_complet:
                 if nouveau_jour_apres_04h and self._cycles_rapides > 0:
-                    _LOGGER.info("Nouveau jour après 04h — cycle complet forcé")
+                    _LOGGER.info("New day after 04:00 — forcing full cycle")
                     self._date_dernier_complet = aujourd_hui
                 result = await self._run_complet(ble_device)
             else:
@@ -263,7 +263,7 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         delta = sum(q["litres"] for q in quarts)
         self._litres_jour_total = self._litres_jour_base + delta
         _LOGGER.debug(
-            "Rapide — base=%d + delta=%d = %d L",
+            "Fast cycle — base=%d + delta=%d = %d L",
             self._litres_jour_base, delta, self._litres_jour_total,
         )
         return self._build_result(bcast)
@@ -377,14 +377,14 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if j["date"] <= hier_d_iso   # exclure aujourd'hui non consolidé
         ][-30:]   # 30 derniers jours disponibles
         self._avg_daily_30d = round(sum(jours_30) / len(jours_30), 1) if jours_30 else None
-        _LOGGER.debug("Moyenne 30j : %s L/j (%d jours)", self._avg_daily_30d, len(jours_30))
+        _LOGGER.debug("30-day average: %s L/d (%d days)", self._avg_daily_30d, len(jours_30))
 
         # Autonomie sel : sel_restant / (regens_moy_jour × sel_par_regen)
         # Moyenne sur les jours disponibles avec au moins 1 régénération
         self._calculer_autonomie(bcast, jours_dates)
 
         _LOGGER.info(
-            "Complet — base=%d L  index=%d  regens=%d  hier=%d L  semaine=%d L",
+            "Full cycle — base=%d L  index=%d  regens=%d  yesterday=%d L  week=%d L",
             self._litres_jour_base, self._index_base,
             self._regens_jour_stable, self._conso_hier_stable, self._conso_semaine_stable,
         )
@@ -416,11 +416,11 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         if ble_device is None:
             raise Exception(
-                f"BWT AQA Perla ({self.address}) introuvable — "
+                f"BWT AQA Perla ({self.address}) not found — "
                 "vérifiez portée BLE ou proxy ESPHome"
             )
 
-        _LOGGER.info("Service get_full_history — lecture de l'historique complet…")
+        _LOGGER.info("Service get_full_history — reading full history...")
 
         client = await establish_connection(
             BleakClient,
@@ -513,7 +513,7 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         qte_sel  = bcast.get("qte_sel_restant", 0)
 
         if vol_rege <= 0 or qte_sel <= 0:
-            _LOGGER.debug("Autonomie non calculable (vol_rege=%d qte_sel=%d)", vol_rege, qte_sel)
+            _LOGGER.debug("Salt autonomy not calculable (vol_rege=%d qte_sel=%d)", vol_rege, qte_sel)
             self._autonomie_jours    = None
             self._autonomie_semaines = None
             return
@@ -539,7 +539,7 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._autonomie_jours    = jours
         self._autonomie_semaines = jours // 7
         _LOGGER.info(
-            "Autonomie sel : %d jours (%d semaines) "
+            "Salt autonomy: %d days (%d weeks) "
             "[sel=%dg  regens=%d/%dj  sel/j=%.1fg]",
             self._autonomie_jours, self._autonomie_semaines,
             qte_sel, total_regens, nb_jours, sel_par_jour,
@@ -557,7 +557,7 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if val_hier > 0:
             self._conso_hier_stable = val_hier
             self._date_hier_stable  = hier_iso
-            _LOGGER.info("Conso hier consolidée : %d L", self._conso_hier_stable)
+            _LOGGER.info("Yesterday consumption consolidated: %d L", self._conso_hier_stable)
         elif self._date_hier_stable != hier_iso and self._conso_hier_stable == 0:
             # Pas encore consolidé → chercher dernière valeur non-nulle
             for i in range(1, 8):
@@ -566,7 +566,7 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 if e and e["litres"] > 0:
                     self._conso_hier_stable = e["litres"]
                     _LOGGER.info(
-                        "Conso hier provisoire depuis %s : %d L", d, self._conso_hier_stable
+                        "Yesterday provisional consumption from %s: %d L", d, self._conso_hier_stable
                     )
                     break
 
@@ -577,10 +577,10 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 for i in range(1, 8)
                 if (d := (dt_util.now().date() - timedelta(days=i)).isoformat()) in jours_dict
             )
-            _LOGGER.info("Conso semaine : %d L", self._conso_semaine_stable)
+            _LOGGER.info("Weekly consumption: %d L", self._conso_semaine_stable)
         else:
             _LOGGER.info(
-                "Conso semaine : J-1 non consolidé — stable conservée (%d L)",
+                "Weekly consumption: yesterday not yet consolidated — keeping stable value (%d L)",
                 self._conso_semaine_stable,
             )
 
@@ -610,7 +610,7 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             await self._attendre_notifications(nb_tr)
 
             if not self._notifications:
-                _LOGGER.warning("Aucune notification reçue @ %#x (%d entrées)", adresse, bloc)
+                _LOGGER.warning("No notification received @ %#x (%d entries)", adresse, bloc)
                 break
 
             for notif in self._notifications:
@@ -668,7 +668,7 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.hass, self.address, connectable=True
         )
         if ble_device is None:
-            raise ValueError(f"BWT AQA Perla ({self.address}) introuvable")
+            raise ValueError(f"BWT AQA Perla ({self.address}) not found")
 
         from bleak_retry_connector import establish_connection as _establish
         client = await _establish(
@@ -719,12 +719,12 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Service get_total_consumption — total en litres depuis l'historique complet."""
         jours = await self._read_full_history()
         total = sum(j["litres"] for j in jours)
-        _LOGGER.info("Total historique : %d L sur %d jours", total, len(jours))
+        _LOGGER.info("Total history: %d L over %d days", total, len(jours))
         return {
-            "total_litres": total,
-            "nb_jours": len(jours),
-            "depuis": jours[0]["date"] if jours else None,
-            "jusqu_au": jours[-1]["date"] if jours else None,
+            "total_liters":  total,
+            "days_count":    len(jours),
+            "from_date":     jours[0]["date"] if jours else None,
+            "to_date":       jours[-1]["date"] if jours else None,
         }
 
     async def service_history_consumption(self) -> dict:

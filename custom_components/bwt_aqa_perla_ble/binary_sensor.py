@@ -33,7 +33,7 @@ class BwtAlarmBinarySensor(CoordinatorEntity[BwtCoordinator], BinarySensorEntity
     """
 
     _attr_has_entity_name = True
-    _attr_name            = "Alarme sel"
+    _attr_translation_key = "salt_alarm"
     _attr_device_class    = BinarySensorDeviceClass.PROBLEM
 
     def __init__(self, coordinator: BwtCoordinator, entry: ConfigEntry) -> None:

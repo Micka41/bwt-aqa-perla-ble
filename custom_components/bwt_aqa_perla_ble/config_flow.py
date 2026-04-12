@@ -62,7 +62,7 @@ class BwtConfigFlow(ConfigFlow, domain=DOMAIN):
     ) -> FlowResult:
         """Déclenché automatiquement par HA quand local_name matche les filtres."""
         _LOGGER.info(
-            "Appareil BLE détecté : nom=%r  adresse=%s  RSSI=%s  services=%s",
+            "BLE device detected: name=%r  address=%s  RSSI=%s  services=%s",
             discovery_info.name,
             discovery_info.address,
             getattr(discovery_info, "rssi", "?"),
@@ -72,7 +72,7 @@ class BwtConfigFlow(ConfigFlow, domain=DOMAIN):
         # Validation stricte avant de proposer l'ajout
         if not _is_bwt_device(discovery_info):
             _LOGGER.debug(
-                "Appareil %s (%r) ignoré — ne correspond pas aux critères BWT",
+                "Device %s (%r) ignored — does not match BWT criteria",
                 discovery_info.address, discovery_info.name,
             )
             return self.async_abort(reason="not_supported")
@@ -85,7 +85,7 @@ class BwtConfigFlow(ConfigFlow, domain=DOMAIN):
         self._name = discovery_info.name or f"BWT AQA Perla BLE ({discovery_info.address})"
 
         _LOGGER.info(
-            "BWT AQA Perla BLE confirmé : %s (%s)",
+            "BWT AQA Perla BLE confirmed: %s (%s)",
             self._name, self._address,
         )
         return await self.async_step_confirm()
