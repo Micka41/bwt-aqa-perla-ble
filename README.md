@@ -102,7 +102,7 @@ Daily consumption is computed as an accumulator (`base` from full cycle + `delta
 
 Yesterday's consumption is only updated once the BWT has consolidated the previous day (~04:00 AM) to avoid showing 0 during the night.
 
-## Services
+## Services / Actions
  
 Three services are available to retrieve the complete history from the BWT device. Each service triggers a full BLE connection (~30-60 seconds).
  
