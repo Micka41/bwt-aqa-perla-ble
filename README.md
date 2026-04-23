@@ -40,6 +40,7 @@ Native Home Assistant integration for the **BWT AQA Perla** water softener via B
 | Regenerations today | — | Regeneration cycles today |
 | Salt autonomy (days) | days | Estimated days of salt remaining |
 | Salt autonomy (weeks) | weeks | Estimated weeks of salt remaining |
+| Salt autonomy end date | — | Estimated date when salt runs out |
 | Salt alarm | — | "OK" or "Alarm" |
 | Firmware | — | Device firmware version |
 

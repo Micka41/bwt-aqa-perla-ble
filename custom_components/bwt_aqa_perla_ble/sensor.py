@@ -13,7 +13,7 @@ from homeassistant.components.sensor import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import PERCENTAGE, UnitOfMass, UnitOfVolume
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.device_registry import CONNECTION_BLUETOOTH, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -29,6 +29,7 @@ from .const import (
     KEY_REGEN_TODAY,
     KEY_SALT_AUTONOMY_DAYS,
     KEY_SALT_AUTONOMY_WEEKS,
+    KEY_SALT_AUTONOMY_DATE,
     KEY_AVG_DAILY_30D,
     KEY_LAST_SYNC,
     KEY_FIRMWARE,
@@ -111,6 +112,12 @@ SENSORS: tuple[BwtSensorEntityDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
     ),
     BwtSensorEntityDescription(
+        key=KEY_SALT_AUTONOMY_DATE,
+        translation_key="salt_autonomy_date",
+        device_class=SensorDeviceClass.DATE,
+        icon="mdi:calendar-end",
+    ),
+    BwtSensorEntityDescription(
         key=KEY_AVG_DAILY_30D,
         translation_key="avg_daily_30d",
         native_unit_of_measurement=UnitOfVolume.LITERS,
@@ -168,8 +175,9 @@ class BwtSensor(CoordinatorEntity[BwtCoordinator], SensorEntity):
 
 def _device_info(coordinator: BwtCoordinator, entry: ConfigEntry) -> DeviceInfo:
     return DeviceInfo(
+        connections={(CONNECTION_BLUETOOTH, coordinator.address)},
         identifiers={(DOMAIN, coordinator.address)},
-        name=entry.data.get("name", f"BWT AQA Perla BLE ({coordinator.address})"),
+        name=entry.data.get("name", "BWT AQA Perla BLE"),
         manufacturer="BWT",
         model="AQA Perla",
     )

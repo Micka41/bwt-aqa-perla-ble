@@ -18,21 +18,50 @@
   },
   "entity": {
     "sensor": {
-      "salt_pct":             { "name": "Salzstand" },
-      "salt_kg":              { "name": "Salz verbleibend" },
-      "salt_total_kg":        { "name": "Salzkapazität" },
-      "consumption_today":    { "name": "Verbrauch heute" },
-      "consumption_yesterday":{ "name": "Verbrauch gestern" },
-      "consumption_week":     { "name": "Verbrauch 7 Tage" },
-      "regen_today":          { "name": "Regenerationen heute" },
-      "salt_autonomy_days":   { "name": "Salzautonomie (Tage)" },
-      "salt_autonomy_weeks":  { "name": "Salzautonomie (Wochen)" },
-      "avg_daily_30d":        { "name": "Durchschnittlicher Tagesverbrauch 30 Tage" },
-      "last_sync":            { "name": "Letzte Synchronisierung" },
-      "firmware":             { "name": "Firmware" }
+      "salt_pct": {
+        "name": "Salzstand"
+      },
+      "salt_kg": {
+        "name": "Salz verbleibend"
+      },
+      "salt_total_kg": {
+        "name": "Salzkapazität"
+      },
+      "consumption_today": {
+        "name": "Verbrauch heute"
+      },
+      "consumption_yesterday": {
+        "name": "Verbrauch gestern"
+      },
+      "consumption_week": {
+        "name": "Verbrauch 7 Tage"
+      },
+      "regen_today": {
+        "name": "Regenerationen heute"
+      },
+      "salt_autonomy_days": {
+        "name": "Salzautonomie (Tage)"
+      },
+      "salt_autonomy_weeks": {
+        "name": "Salzautonomie (Wochen)"
+      },
+      "avg_daily_30d": {
+        "name": "Durchschnittlicher Tagesverbrauch 30 Tage"
+      },
+      "last_sync": {
+        "name": "Letzte Synchronisierung"
+      },
+      "firmware": {
+        "name": "Firmware"
+      },
+      "salt_autonomy_date": {
+        "name": "Salzautonomie Enddatum"
+      }
     },
     "binary_sensor": {
-      "salt_alarm": { "name": "Salzalarm" }
+      "salt_alarm": {
+        "name": "Salzalarm"
+      }
     }
   }
 }
