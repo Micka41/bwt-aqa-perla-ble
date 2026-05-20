@@ -65,6 +65,7 @@ from .const import (
     KEY_AVG_DAILY_30D,
     KEY_LAST_SYNC,
     KEY_FIRMWARE,
+    KEY_DEBUG_BROADCAST,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -198,7 +199,22 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Autonomie sel
         self._autonomie_jours:    int | None = None
         self._autonomie_semaines: int | None = None
-        self._autonomie_date:     date | None = None  # figée tant que _autonomie_jours ne change pas
+        self._autonomie_date:     date | None = None  # figée tant qu'il n'y a pas de régénération
+        self._regens_precedent:   int = 0              # pour détecter les régénérations
+        
+        # Debug (diagnostic entity)
+        self._debug_broadcast_history: list[str] = []  # dernières 10 trames BROADCAST
+
+    def _store_broadcast_debug(self, buf: bytes) -> None:
+        """Stocker la trame BROADCAST pour l'entité diagnostic."""
+        timestamp = dt_util.now().strftime("%Y-%m-%d %H:%M:%S")
+        hex_dump = " ".join(f"{b:02x}" for b in buf)
+        entry = f"{timestamp} [{len(buf)}B]: {hex_dump}"
+        
+        self._debug_broadcast_history.append(entry)
+        # Garder seulement les 10 dernières
+        if len(self._debug_broadcast_history) > 10:
+            self._debug_broadcast_history.pop(0)
 
     # ── Hook principal ────────────────────────────────────────────────
 
@@ -265,7 +281,9 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             await self._start_notify(client)
             await client.read_gatt_char(UUID_OTHER)  # auth
 
-            bcast = _decode_broadcast(await client.read_gatt_char(UUID_BROADCAST))
+            buf = await client.read_gatt_char(UUID_BROADCAST)
+            self._store_broadcast_debug(buf)
+            bcast = _decode_broadcast(buf)
             self._dernier_index_tab_quart = bcast["index_tab_quart"]
             if bcast["version"]:
                 self._firmware = bcast["version"]
@@ -307,7 +325,9 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             await self._start_notify(client)
             await client.read_gatt_char(UUID_OTHER)
 
-            bcast = _decode_broadcast(await client.read_gatt_char(UUID_BROADCAST))
+            buf = await client.read_gatt_char(UUID_BROADCAST)
+            self._store_broadcast_debug(buf)
+            bcast = _decode_broadcast(buf)
             self._dernier_index_tab_quart = bcast["index_tab_quart"]
             if bcast["version"]:
                 self._firmware = bcast["version"]
@@ -424,7 +444,6 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
           sel_consomme_par_jour = (nb_regens_sur_periode × vol_sel_rege) / nb_jours_periode
           autonomie_jours       = qte_sel_restant / sel_consomme_par_jour
 
-        Plus stable que CalcAutonomie() Java qui oscille à chaque régénération.
         Utilise uniquement les jours avec au moins une régénération pour la moyenne.
         """
         vol_rege = bcast.get("vol_sel_rege", 0)
@@ -454,13 +473,19 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         sel_par_jour = (total_regens * vol_rege) / nb_jours
 
         jours = round(qte_sel / sel_par_jour)
-        if jours != self._autonomie_jours:
-            # Recalculer la date uniquement si l'autonomie en jours a changé
-            self._autonomie_jours    = jours
-            self._autonomie_semaines = jours // 7
+        
+        # Recalculer la date uniquement lors d'une régénération
+        # Détection : _regens_jour_stable augmente (0→1 signale une nouvelle régénération)
+        if self._autonomie_date is None or self._regens_jour_stable > self._regens_precedent:
+            # Première initialisation ou régénération détectée
             self._autonomie_date = dt_util.now().date() + timedelta(days=jours)
-        else:
-            self._autonomie_semaines = jours // 7
+        
+        # Toujours mettre à jour après le calcul (pour détecter le prochain changement)
+        self._regens_precedent = self._regens_jour_stable
+        
+        # Toujours mettre à jour les valeurs en jours/semaines
+        self._autonomie_jours    = jours
+        self._autonomie_semaines = jours // 7
         _LOGGER.info(
             "Salt autonomy: %d days (%d weeks) "
             "[sel=%dg  regens=%d/%dj  sel/j=%.1fg]",
@@ -601,7 +626,9 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         try:
             await self._start_notify(client)
             await client.read_gatt_char(UUID_OTHER)
-            bcast = _decode_broadcast(await client.read_gatt_char(UUID_BROADCAST))
+            buf = await client.read_gatt_char(UUID_BROADCAST)
+            self._store_broadcast_debug(buf)
+            bcast = _decode_broadcast(buf)
 
             idx_j     = bcast["index_tab_jour"]
             loop_jour = bcast["loop_jour"]
@@ -686,4 +713,5 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             KEY_AVG_DAILY_30D:         self._avg_daily_30d,
             KEY_LAST_SYNC:             dt_util.now(),
             KEY_FIRMWARE:              self._firmware,
+            KEY_DEBUG_BROADCAST:       "\n".join(self._debug_broadcast_history) if self._debug_broadcast_history else "No data",
         }

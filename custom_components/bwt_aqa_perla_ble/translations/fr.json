@@ -56,6 +56,9 @@
       },
       "salt_autonomy_date": {
         "name": "Date fin autonomie"
+      },
+      "debug_broadcast": {
+        "name": "Trames BROADCAST (debug)"
       }
     },
     "binary_sensor": {

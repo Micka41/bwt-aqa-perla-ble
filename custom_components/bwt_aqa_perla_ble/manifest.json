@@ -7,7 +7,9 @@
       "connectable": true
     }
   ],
-  "codeowners": [],
+  "codeowners": [
+    "@Micka41"
+  ],
   "config_flow": true,
   "dependencies": [
     "bluetooth"
@@ -18,5 +20,5 @@
   "requirements": [
     "bleak-retry-connector>=3.0.0"
   ],
-  "version": "2026.04.9"
+  "version": "2026.05.1"
 }

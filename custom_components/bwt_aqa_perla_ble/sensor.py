@@ -14,25 +14,26 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import PERCENTAGE, UnitOfMass, UnitOfVolume
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import CONNECTION_BLUETOOTH, DeviceInfo
+from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
     DOMAIN,
-    KEY_SALT_PCT,
-    KEY_SALT_KG,
-    KEY_SALT_TOTAL_KG,
-    KEY_SALT_ALARM,
+    KEY_AVG_DAILY_30D,
     KEY_CONSUMPTION_TODAY,
-    KEY_CONSUMPTION_YESTERDAY,
     KEY_CONSUMPTION_WEEK,
+    KEY_CONSUMPTION_YESTERDAY,
+    KEY_DEBUG_BROADCAST,
+    KEY_FIRMWARE,
+    KEY_LAST_SYNC,
     KEY_REGEN_TODAY,
+    KEY_SALT_AUTONOMY_DATE,
     KEY_SALT_AUTONOMY_DAYS,
     KEY_SALT_AUTONOMY_WEEKS,
-    KEY_SALT_AUTONOMY_DATE,
-    KEY_AVG_DAILY_30D,
-    KEY_LAST_SYNC,
-    KEY_FIRMWARE,
+    KEY_SALT_KG,
+    KEY_SALT_PCT,
+    KEY_SALT_TOTAL_KG,
 )
 from .coordinator import BwtCoordinator
 
@@ -134,6 +135,13 @@ SENSORS: tuple[BwtSensorEntityDescription, ...] = (
         key=KEY_FIRMWARE,
         translation_key="firmware",
         icon="mdi:chip",
+        entity_registry_enabled_default=False,
+    ),
+    BwtSensorEntityDescription(
+        key=KEY_DEBUG_BROADCAST,
+        translation_key="debug_broadcast",
+        icon="mdi:code-brackets",
+        entity_category=EntityCategory.DIAGNOSTIC,
         entity_registry_enabled_default=False,
     ),
 )

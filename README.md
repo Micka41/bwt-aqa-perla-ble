@@ -8,6 +8,8 @@
 [![GitHub stars](https://img.shields.io/github/stars/Micka41/bwt-aqa-perla-ble.svg)](https://github.com/Micka41/bwt-aqa-perla-ble/stargazers)
 [![Validate](https://github.com/Micka41/bwt-aqa-perla-ble/actions/workflows/validate.yml/badge.svg)](https://github.com/Micka41/bwt-aqa-perla-ble/actions/workflows/validate.yml)
 
+> 🇫🇷 [Version française disponible](README.fr.md)
+
 [![Buy Me A Coffee](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://www.buymeacoffee.com/micka41 "Buy Me A Coffee") [<img style="background:#ccc;border-radius:10px" alt="PayPal" src="https://www.paypalobjects.com/paypal-ui/logos/svg/paypal-color.svg" width="200" height="40px" />](https://paypal.me/mpicaud41)
 
 Native Home Assistant integration for the **BWT AQA Perla** water softener via Bluetooth Low Energy (BLE).
@@ -43,6 +45,32 @@ Native Home Assistant integration for the **BWT AQA Perla** water softener via B
 | Salt autonomy end date | — | Estimated date when salt runs out |
 | Salt alarm | — | "OK" or "Alarm" |
 | Firmware | — | Device firmware version |
+
+## Diagnostic Entity
+ 
+The integration includes a **diagnostic entity** (disabled by default) that captures raw BROADCAST frames for troubleshooting.
+
+### Activation
+ 
+1. Go to **Settings → Devices & Services → BWT AQA Perla BLE → [your device]**
+2. Enable the entity **BROADCAST frames (debug)**
+3. Wait for the next BLE cycle (~1-2 minutes)
+### Output Format
+ 
+The entity displays the last 10 BROADCAST frames received with timestamps:
+ 
+```
+2026-04-27 15:32:10 [20B]: 7c 36 02 00 ab 07 98 03 bc 07 34 00 12 02 15 54 00 00 00 00
+2026-04-27 15:47:23 [20B]: 7c 36 02 00 ac 07 99 03 bc 07 34 00 12 02 15 54 00 00 00 00
+...
+```
+ 
+### Use Cases
+ 
+- **Firmware debugging** — if you encounter unexpected salt level values (see [Issue #4](https://github.com/Micka41/bwt-aqa-perla-ble/issues/4))
+- **Support requests** — provide raw data when reporting issues
+- **Protocol analysis** — understand BWT's BLE communication
+> **Note**: This entity is disabled by default to avoid unnecessary resource usage. Enable it only when needed for diagnostics.
 
 ## Requirements
 

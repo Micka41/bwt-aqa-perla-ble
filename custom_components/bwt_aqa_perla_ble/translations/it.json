@@ -56,6 +56,9 @@
       },
       "salt_autonomy_date": {
         "name": "Data fine autonomia sale"
+      },
+      "debug_broadcast": {
+        "name": "Frame BROADCAST (debug)"
       }
     },
     "binary_sensor": {
