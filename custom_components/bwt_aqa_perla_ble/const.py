@@ -41,6 +41,7 @@ NB_QUARTS_RAPIDE   = 100    # ~25 heures, couvre largement la journée en cours
 BLE_CONNECT_TIMEOUT  = 30.0   # secondes
 BLE_NOTIFY_SILENCE   = 1.5    # secondes de silence = fin de bloc
 BLE_NOTIFY_TIMEOUT   = 15.0   # timeout total par bloc
+BLE_DISCONNECT_TIMEOUT = 5.0    # s — borne la fermeture ; voir issue #8
 
 # ── Clés des capteurs HA ─────────────────────────────────────────────────────
 KEY_SALT_PCT              = "salt_percent"
@@ -51,7 +52,6 @@ KEY_CONSUMPTION_TODAY     = "consumption_today"
 KEY_CONSUMPTION_YESTERDAY = "consumption_yesterday"
 KEY_CONSUMPTION_WEEK      = "consumption_week"
 KEY_REGEN_TODAY           = "regen_today"
-KEY_REGEN_YESTERDAY       = "regen_yesterday"
 KEY_SALT_AUTONOMY_DAYS    = "salt_autonomy_days"
 KEY_SALT_AUTONOMY_WEEKS   = "salt_autonomy_weeks"
 KEY_SALT_AUTONOMY_DATE    = "salt_autonomy_date"
@@ -59,3 +59,8 @@ KEY_AVG_DAILY_30D         = "avg_daily_consumption_30d"
 KEY_LAST_SYNC             = "last_sync"
 KEY_FIRMWARE              = "firmware"
 KEY_DEBUG_BROADCAST       = "debug_broadcast"
+
+# ── Stockage persistant ──────────────────────────────────────────────────────
+# Conserve la date de fin d'autonomie entre les redémarrages de Home Assistant.
+STORAGE_VERSION = 1
+STORAGE_KEY     = DOMAIN

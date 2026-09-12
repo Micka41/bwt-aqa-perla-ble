@@ -16,7 +16,7 @@ Intégration native Home Assistant pour l'adoucisseur d'eau **BWT AQA Perla** vi
 
 > Aucun broker MQTT requis. Fonctionne avec les proxys Bluetooth ESPHome.
 
-![BWT AQA Perla](custom_components/bwt_aqa_perla_ble/icon.png)
+<img src="res/bwt-aqa-perla-ble.png" alt="BWT AQA Perla" width="280">
 
 ---
 
@@ -87,11 +87,21 @@ L'entité affiche les 10 dernières trames BROADCAST reçues avec horodatage :
 
 ### Via HACS (recommandé)
 
+[![Ouvre votre instance Home Assistant et ajoute un dépôt dans la boutique communautaire Home Assistant.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=Micka41&repository=bwt-aqa-perla-ble&category=integration)
+
+Le bouton ci-dessus ouvre ce dépôt directement dans votre HACS. Cliquez ensuite
+sur **Télécharger**, puis redémarrez Home Assistant.
+
+<details>
+<summary>Ajout manuel</summary>
+
 1. Ouvrir HACS → **Intégrations**
 2. Cliquer ⋮ → **Dépôts personnalisés**
 3. Ajouter `https://github.com/Micka41/bwt-aqa-perla-ble` — Catégorie : **Integration**
 4. Installer **BWT AQA Perla BLE**
 5. Redémarrer Home Assistant
+
+</details>
 
 ### Manuel
 
@@ -184,6 +194,7 @@ Retourne le nombre de cycles de régénération structuré par année/mois/jour.
 Testé sur :
 - BWT AQA Perla 10
 - BWT Calypso 2
+- BWT Blue 22l
 
 Devrait fonctionner avec d'autres variantes BWT AQA Perla. Merci d'ouvrir une issue si vous avez un modèle différent et qu'il ne fonctionne pas.
 

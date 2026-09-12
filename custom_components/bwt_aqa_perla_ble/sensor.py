@@ -180,6 +180,17 @@ class BwtSensor(CoordinatorEntity[BwtCoordinator], SensorEntity):
             return None
         return self.coordinator.data.get(self.entity_description.key)
 
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        # L'état est limité à 255 caractères et ne porte que la dernière
+        # trame : l'historique complet est exposé ici.
+        if (
+            self.entity_description.key == KEY_DEBUG_BROADCAST
+            and self.coordinator.data is not None
+        ):
+            return {"frames": self.coordinator.data.get("debug_broadcast_frames", [])}
+        return None
+
 
 def _device_info(coordinator: BwtCoordinator, entry: ConfigEntry) -> DeviceInfo:
     return DeviceInfo(

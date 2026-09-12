@@ -22,6 +22,9 @@ SERVICE_GET_HISTORY_REGEN = "get_history_regenerations"
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up BWT AQA Perla BLE from a config entry."""
     coordinator = BwtCoordinator(hass, entry.data["address"])
+    # Restaurer l'état persistant (date de fin d'autonomie) avant le premier
+    # rafraîchissement, sinon elle serait recalculée à partir de la date du jour.
+    await coordinator.async_load_stored_data()
     await coordinator.async_config_entry_first_refresh()
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator

@@ -8,7 +8,7 @@
 [![GitHub stars](https://img.shields.io/github/stars/Micka41/bwt-aqa-perla-ble.svg)](https://github.com/Micka41/bwt-aqa-perla-ble/stargazers)
 [![Validate](https://github.com/Micka41/bwt-aqa-perla-ble/actions/workflows/validate.yml/badge.svg)](https://github.com/Micka41/bwt-aqa-perla-ble/actions/workflows/validate.yml)
 
-> 🇫🇷 [Version française disponible](README.fr.md)
+> 🇫🇷 [Version française](README.fr.md)
 
 [![Buy Me A Coffee](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://www.buymeacoffee.com/micka41 "Buy Me A Coffee") [<img style="background:#ccc;border-radius:10px" alt="PayPal" src="https://www.paypalobjects.com/paypal-ui/logos/svg/paypal-color.svg" width="200" height="40px" />](https://paypal.me/mpicaud41)
 
@@ -16,7 +16,7 @@ Native Home Assistant integration for the **BWT AQA Perla** water softener via B
 
 > No MQTT broker required. Works with ESPHome Bluetooth proxies.
 
-![BWT AQA Perla](custom_components/bwt_aqa_perla_ble/icon.png)
+<img src="res/bwt-aqa-perla-ble.png" alt="BWT AQA Perla" width="280">
 
 ---
 
@@ -84,11 +84,21 @@ The entity displays the last 10 BROADCAST frames received with timestamps:
 
 ### Via HACS (recommended)
 
+[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=Micka41&repository=bwt-aqa-perla-ble&category=integration)
+
+The button above opens this repository directly in your HACS. Then click
+**Download** and restart Home Assistant.
+
+<details>
+<summary>Add it manually instead</summary>
+
 1. Open HACS → **Integrations**
 2. Click ⋮ → **Custom repositories**
 3. Add `https://github.com/Micka41/bwt-aqa-perla-ble` — Category: **Integration**
 4. Install **BWT AQA Perla BLE**
 5. Restart Home Assistant
+
+</details>
 
 ### Manual
 
@@ -181,6 +191,7 @@ Returns the number of regeneration cycles structured by year/month/day.
 Tested on:
 - BWT AQA Perla 10
 - BWT Calypso 2
+- BWT Blue 22l
 
 Should work with other BWT AQA Perla variants. Please open an issue if you have a different model and it doesn't work.
 

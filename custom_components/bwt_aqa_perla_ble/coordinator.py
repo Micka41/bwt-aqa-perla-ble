@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import asynccontextmanager, suppress
 from datetime import date, timedelta
 from typing import Any
 
@@ -30,11 +31,14 @@ from bleak_retry_connector import establish_connection
 
 from homeassistant.components.bluetooth import async_ble_device_from_address
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
 from .const import (
     DOMAIN,
+    STORAGE_KEY,
+    STORAGE_VERSION,
     SCAN_INTERVAL,
     INTERVALLE_COMPLET_H,
     INTERVALLE_RAPIDE_S,
@@ -51,6 +55,7 @@ from .const import (
     BLE_CONNECT_TIMEOUT,
     BLE_NOTIFY_SILENCE,
     BLE_NOTIFY_TIMEOUT,
+    BLE_DISCONNECT_TIMEOUT,
     KEY_SALT_PCT,
     KEY_SALT_KG,
     KEY_SALT_TOTAL_KG,
@@ -205,6 +210,11 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Debug (diagnostic entity)
         self._debug_broadcast_history: list[str] = []  # dernières 10 trames BROADCAST
 
+        # Stockage persistant : survit aux redémarrages de Home Assistant
+        self._store: Store = Store(
+            hass, STORAGE_VERSION, f"{STORAGE_KEY}.{address.replace(':', '').lower()}"
+        )
+
     def _store_broadcast_debug(self, buf: bytes) -> None:
         """Stocker la trame BROADCAST pour l'entité diagnostic."""
         timestamp = dt_util.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -216,9 +226,52 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if len(self._debug_broadcast_history) > 10:
             self._debug_broadcast_history.pop(0)
 
-    # ── Hook principal ────────────────────────────────────────────────
+    # ── Persistance ───────────────────────────────────────────────────
 
-    async def _async_update_data(self) -> dict[str, Any]:
+    async def async_load_stored_data(self) -> None:
+        """Restaure l'état persistant au démarrage de Home Assistant.
+
+        La date de fin d'autonomie est figée entre deux régénérations : sans
+        cette restauration, un redémarrage la recalculerait à partir de la date
+        du jour et la ferait glisser.
+        """
+        stored = await self._store.async_load()
+        if not stored:
+            return
+
+        if (iso := stored.get("autonomy_date")) is not None:
+            try:
+                self._autonomie_date = date.fromisoformat(iso)
+            except ValueError:
+                _LOGGER.warning("Stored autonomy date is invalid: %s", iso)
+
+        self._autonomie_jours    = stored.get("autonomy_days")
+        self._autonomie_semaines = stored.get("autonomy_weeks")
+        self._regens_precedent   = stored.get("previous_regens", 0)
+
+        _LOGGER.debug(
+            "Restored state: autonomy_date=%s days=%s",
+            self._autonomie_date, self._autonomie_jours,
+        )
+
+    def _persist_state(self) -> None:
+        """Planifie l'écriture de l'état (différée et regroupée par HA)."""
+        self._store.async_delay_save(
+            lambda: {
+                "autonomy_date": (
+                    self._autonomie_date.isoformat() if self._autonomie_date else None
+                ),
+                "autonomy_days":   self._autonomie_jours,
+                "autonomy_weeks":  self._autonomie_semaines,
+                "previous_regens": self._regens_precedent,
+            },
+            delay=10,
+        )
+
+    # ── Session BLE ───────────────────────────────────────────────────
+
+    def _resolve_ble_device(self):
+        """Retrouve l'appareil dans la pile Bluetooth, ou échoue clairement."""
         ble_device = async_ble_device_from_address(
             self.hass, self.address, connectable=True
         )
@@ -227,6 +280,64 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 f"BWT AQA Perla ({self.address}) not found — "
                 "vérifiez portée BLE ou proxy ESPHome"
             )
+        return ble_device
+
+    @asynccontextmanager
+    async def _ble_session(self, ble_device=None):
+        """Ouvre une session avec l'adoucisseur et garantit sa fermeture.
+
+        Prend en charge la séquence commune aux trois usages : connexion,
+        abonnement aux notifications, authentification, lecture du BROADCAST.
+        Cède `(client, bcast)` au bloc appelant, puis envoie la commande BREAK
+        et se déconnecte — y compris si le bloc lève.
+
+        `ble_device` peut être fourni lorsqu'il a déjà été résolu (cycles de
+        rafraîchissement) ; sinon il est recherché ici (appels de service).
+        """
+        if ble_device is None:
+            ble_device = self._resolve_ble_device()
+
+        client = await establish_connection(
+            BleakClient,
+            ble_device,
+            self.address,
+            max_attempts=3,
+            ctor_kwargs={"timeout": BLE_CONNECT_TIMEOUT},
+        )
+        try:
+            await self._start_notify(client)
+            await client.read_gatt_char(UUID_OTHER)  # auth
+
+            buf = await client.read_gatt_char(UUID_BROADCAST)
+            self._store_broadcast_debug(buf)
+            bcast = _decode_broadcast(buf)
+            self._dernier_index_tab_quart = bcast["index_tab_quart"]
+            if bcast["version"]:
+                self._firmware = bcast["version"]
+
+            yield client, bcast
+
+            await client.write_gatt_char(UUID_WRITE, _build_break_cmd())
+            await client.stop_notify(UUID_READ1)
+        finally:
+            # Une pile BlueZ dégradée peut faire attendre disconnect()
+            # indéfiniment. Comme ce bloc s'exécute pendant la propagation
+            # d'une exception, ce blocage empêcherait l'erreur d'origine
+            # d'atteindre son gestionnaire : Home Assistant suspendrait son
+            # démarrage puis classerait l'entrée en setup_error, qu'il ne
+            # réessaie jamais. Voir issue #8.
+            #
+            # suppress(Exception) laisse passer CancelledError, qui dérive de
+            # BaseException : une annulation véritable reste propagée.
+            with suppress(Exception):
+                async with asyncio.timeout(BLE_DISCONNECT_TIMEOUT):
+                    await client.disconnect()
+
+    # ── Hook principal ────────────────────────────────────────────────
+
+    async def _async_update_data(self) -> dict[str, Any]:
+        # Échouer avant le reset minuit si l'appareil est hors de portée
+        ble_device = self._resolve_ble_device()
 
         now            = dt_util.now()
         aujourd_hui    = now.date().isoformat()
@@ -239,7 +350,6 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 and self._date_remise_a_zero != aujourd_hui
                 and self._litres_jour_total > 0):
             _LOGGER.info("Midnight — resetting daily consumption")
-            self._regens_hier_stable  = self._regens_jour_stable   # ← sauvegarder avant reset
             self._litres_jour_base  = 0
             self._litres_jour_total = 0
             self._index_base        = self._dernier_index_tab_quart
@@ -270,24 +380,7 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def _run_rapide(self, ble_device) -> dict[str, Any]:
         """BROADCAST + quarts depuis _index_base → delta conso jour."""
-        client = await establish_connection(
-            BleakClient,
-            ble_device,
-            self.address,
-            max_attempts=3,
-            ctor_kwargs={"timeout": BLE_CONNECT_TIMEOUT},
-        )
-        try:
-            await self._start_notify(client)
-            await client.read_gatt_char(UUID_OTHER)  # auth
-
-            buf = await client.read_gatt_char(UUID_BROADCAST)
-            self._store_broadcast_debug(buf)
-            bcast = _decode_broadcast(buf)
-            self._dernier_index_tab_quart = bcast["index_tab_quart"]
-            if bcast["version"]:
-                self._firmware = bcast["version"]
-
+        async with self._ble_session(ble_device) as (client, bcast):
             # Quarts nouveaux depuis _index_base
             idx = bcast["index_tab_quart"]
             nb  = (idx - self._index_base) % MAX_TAB_QUART
@@ -296,11 +389,6 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 quarts = await self._lire_blocs(
                     client, ADRESSE_TAB_QUART, self._index_base, nb, is_quart=True
                 )
-
-            await client.write_gatt_char(UUID_WRITE, _build_break_cmd())
-            await client.stop_notify(UUID_READ1)
-        finally:
-            await client.disconnect()
 
         delta = sum(q["litres"] for q in quarts)
         self._litres_jour_total = self._litres_jour_base + delta
@@ -314,24 +402,7 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def _run_complet(self, ble_device) -> dict[str, Any]:
         """BROADCAST + 120 quarts + 8 jours → recalibrage complet."""
-        client = await establish_connection(
-            BleakClient,
-            ble_device,
-            self.address,
-            max_attempts=3,
-            ctor_kwargs={"timeout": BLE_CONNECT_TIMEOUT},
-        )
-        try:
-            await self._start_notify(client)
-            await client.read_gatt_char(UUID_OTHER)
-
-            buf = await client.read_gatt_char(UUID_BROADCAST)
-            self._store_broadcast_debug(buf)
-            bcast = _decode_broadcast(buf)
-            self._dernier_index_tab_quart = bcast["index_tab_quart"]
-            if bcast["version"]:
-                self._firmware = bcast["version"]
-
+        async with self._ble_session(ble_device) as (client, bcast):
             # Quarts — gestion du buffer circulaire (wrap tous les 30 jours)
             idx_q = bcast["index_tab_quart"]
             nb_q  = min(NB_QUARTS_COMPLET, MAX_TAB_QUART)
@@ -373,11 +444,6 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     jours += await self._lire_blocs(
                         client, ADRESSE_TAB_JOUR, 0, idx_j, is_quart=False
                     )
-
-            await client.write_gatt_char(UUID_WRITE, _build_break_cmd())
-            await client.stop_notify(UUID_READ1)
-        finally:
-            await client.disconnect()
 
         # Assigner les dates ET heures aux quarts (ancre = dernier quart terminé)
         _now     = dt_util.now()
@@ -436,6 +502,19 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     # ── Calcul de l'autonomie sel ─────────────────────────────────────
 
+    def _reset_autonomie(self) -> None:
+        """Rend l'autonomie indisponible : jours, semaines ET date de fin.
+
+        Laisser la date en place afficherait une échéance obsolète alors que
+        les autres capteurs d'autonomie sont indisponibles.
+        """
+        if self._autonomie_jours is None and self._autonomie_date is None:
+            return
+        self._autonomie_jours    = None
+        self._autonomie_semaines = None
+        self._autonomie_date     = None
+        self._persist_state()
+
     def _calculer_autonomie(self, bcast: dict, jours_dates: list[dict]) -> None:
         """
         Calcul de l'autonomie sel basé sur la consommation moyenne de sel par jour.
@@ -451,21 +530,18 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         if vol_rege <= 0 or qte_sel <= 0:
             _LOGGER.debug("Salt autonomy not calculable (vol_rege=%d qte_sel=%d)", vol_rege, qte_sel)
-            self._autonomie_jours    = None
-            self._autonomie_semaines = None
+            self._reset_autonomie()
             return
 
         jours_tries = sorted(jours_dates, key=lambda e: e["date"])
         if len(jours_tries) < 2:
-            self._autonomie_jours    = None
-            self._autonomie_semaines = None
+            self._reset_autonomie()
             return
 
         # Total des régénérations sur toute la période disponible
         total_regens = sum(j["rege"] for j in jours_tries)
         if total_regens == 0:
-            self._autonomie_jours    = None
-            self._autonomie_semaines = None
+            self._reset_autonomie()
             return
 
         # Sel consommé par jour en moyenne
@@ -473,19 +549,24 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         sel_par_jour = (total_regens * vol_rege) / nb_jours
 
         jours = round(qte_sel / sel_par_jour)
-        
-        # Recalculer la date uniquement lors d'une régénération
-        # Détection : _regens_jour_stable augmente (0→1 signale une nouvelle régénération)
-        if self._autonomie_date is None or self._regens_jour_stable > self._regens_precedent:
-            # Première initialisation ou régénération détectée
+
+        # La date de fin est figée entre deux régénérations : la recalculer à
+        # chaque cycle la ferait glisser d'un jour par jour.
+        #
+        # Le compteur journalier repart de zéro à minuit : une simple
+        # comparaison « compteur > précédent » manquerait une régénération
+        # survenue juste après le reset. On considère donc qu'il y a
+        # régénération dès que le compteur change ET qu'il est non nul.
+        regens = self._regens_jour_stable
+        nouvelle_regen = regens > 0 and regens != self._regens_precedent
+
+        if self._autonomie_date is None or nouvelle_regen:
             self._autonomie_date = dt_util.now().date() + timedelta(days=jours)
-        
-        # Toujours mettre à jour après le calcul (pour détecter le prochain changement)
-        self._regens_precedent = self._regens_jour_stable
-        
-        # Toujours mettre à jour les valeurs en jours/semaines
+
+        self._regens_precedent   = regens
         self._autonomie_jours    = jours
         self._autonomie_semaines = jours // 7
+        self._persist_state()
         _LOGGER.info(
             "Salt autonomy: %d days (%d weeks) "
             "[sel=%dg  regens=%d/%dj  sel/j=%.1fg]",
@@ -496,13 +577,18 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     # ── Stabilisation hier / semaine ─────────────────────────────────
 
     def _mettre_a_jour_hier_semaine(self, jours_dict: dict[str, dict]) -> None:
-        """Protège contre la non-consolidation du BWT (J-1 consolidé vers 04h00).
-        Note : _regens_hier_stable est géré au reset minuit, pas ici."""
+        """Protège contre la non-consolidation du BWT (J-1 consolidé vers 04h00)."""
         hier_iso    = (dt_util.now().date() - timedelta(days=1)).isoformat()
         entree_hier = jours_dict.get(hier_iso)
         val_hier    = entree_hier["litres"] if entree_hier else 0
 
-        if val_hier > 0:
+        # Le BWT consolide J-1 vers 04h00. Après cette heure, une valeur nulle
+        # est légitime — le buffer journalier stocke par tranches de 10 L, donc
+        # une consommation inférieure y est enregistrée comme 0 — et ne doit pas
+        # être confondue avec « pas encore consolidé ».
+        consolide = dt_util.now().hour >= 4
+
+        if val_hier > 0 or (consolide and entree_hier is not None):
             self._conso_hier_stable = val_hier
             self._date_hier_stable  = hier_iso
             _LOGGER.info("Yesterday consumption consolidated: %d L", self._conso_hier_stable)
@@ -558,8 +644,13 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             await self._attendre_notifications(nb_tr)
 
             if not self._notifications:
-                _LOGGER.warning("No notification received @ %#x (%d entries)", adresse, bloc)
-                break
+                # Retourner une liste tronquée fausserait la datation des
+                # entrées (l'ancrage suppose que la dernière lue est la plus
+                # récente) et donc la consommation du jour.
+                raise UpdateFailed(
+                    f"No notification received @ {adresse:#x} "
+                    f"({bloc} entries expected, {len(resultats)} read so far)"
+                )
 
             for notif in self._notifications:
                 _, entries = _decode_notification(notif, is_quart)
@@ -610,33 +701,13 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def _read_full_history(self) -> list[dict]:
         """Lit tout l'historique journalier disponible (jusqu'à 1825 jours)."""
-        from .const import MAX_TAB_JOUR as _MAX_TAB_JOUR
-
-        ble_device = async_ble_device_from_address(
-            self.hass, self.address, connectable=True
-        )
-        if ble_device is None:
-            raise ValueError(f"BWT AQA Perla ({self.address}) not found")
-
-        from bleak_retry_connector import establish_connection as _establish
-        client = await _establish(
-            BleakClient, ble_device, self.address,
-            max_attempts=3, ctor_kwargs={"timeout": BLE_CONNECT_TIMEOUT},
-        )
-        try:
-            await self._start_notify(client)
-            await client.read_gatt_char(UUID_OTHER)
-            buf = await client.read_gatt_char(UUID_BROADCAST)
-            self._store_broadcast_debug(buf)
-            bcast = _decode_broadcast(buf)
-
+        async with self._ble_session() as (client, bcast):
             idx_j     = bcast["index_tab_jour"]
             loop_jour = bcast["loop_jour"]
 
             if loop_jour:
                 # Buffer plein (>5 ans) : lire les 1825 jours en 2 parties
                 # idx_j pointe sur le plus ancien → partie 1 : idx_j..fin, partie 2 : 0..idx_j-1
-                nb_j = MAX_TAB_JOUR
                 jours = await self._lire_blocs(
                     client, ADRESSE_TAB_JOUR, idx_j, MAX_TAB_JOUR - idx_j, is_quart=False
                 )
@@ -652,14 +723,8 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             else:
                 jours = []
 
-            await client.write_gatt_char(UUID_WRITE, _build_break_cmd())
-            await client.stop_notify(UUID_READ1)
-        finally:
-            await client.disconnect()
-
         # Assigner les dates (ancre = hier)
-        from homeassistant.util import dt as _dt
-        hier_d = _dt.now().date() - timedelta(days=1)
+        hier_d = dt_util.now().date() - timedelta(days=1)
         return [
             {**j, "date": (hier_d - timedelta(days=(len(jours) - 1 - i))).isoformat()}
             for i, j in enumerate(jours)
@@ -713,5 +778,8 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             KEY_AVG_DAILY_30D:         self._avg_daily_30d,
             KEY_LAST_SYNC:             dt_util.now(),
             KEY_FIRMWARE:              self._firmware,
-            KEY_DEBUG_BROADCAST:       "\n".join(self._debug_broadcast_history) if self._debug_broadcast_history else "No data",
+            # L'état d'une entité HA est limité à 255 caractères : il ne porte
+            # que la dernière trame, l'historique passe par les attributs.
+            KEY_DEBUG_BROADCAST:       self._debug_broadcast_history[-1] if self._debug_broadcast_history else "No data",
+            "debug_broadcast_frames":  list(self._debug_broadcast_history),
         }
