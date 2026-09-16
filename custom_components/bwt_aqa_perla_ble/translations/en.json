@@ -37,13 +37,16 @@
         "name": "Consumption 7 days"
       },
       "regen_today": {
-        "name": "Regenerations today"
+        "name": "Regenerations today",
+        "unit_of_measurement": "regenerations"
       },
       "salt_autonomy_days": {
-        "name": "Salt autonomy (days)"
+        "name": "Salt autonomy",
+        "unit_of_measurement": "days"
       },
       "salt_autonomy_weeks": {
-        "name": "Salt autonomy (weeks)"
+        "name": "Salt autonomy (weeks)",
+        "unit_of_measurement": "weeks"
       },
       "avg_daily_30d": {
         "name": "Average daily consumption 30 days"
@@ -59,6 +62,10 @@
       },
       "debug_broadcast": {
         "name": "BROADCAST frames (debug)"
+      },
+      "water_cutoff_today": {
+        "name": "Water cutoffs today",
+        "unit_of_measurement": "cutoffs"
       }
     },
     "binary_sensor": {

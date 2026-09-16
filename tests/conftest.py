@@ -284,10 +284,14 @@ def make_broadcast(
 
 
 def make_notification(values: list[int], index: int = 0) -> bytes:
-    """Construit une trame de notification (20 octets : index + 9 mots)."""
+    """Construit une trame de notification (20 octets : séquence + 9 mots).
+
+    `index` est le numéro de séquence de la trame dans son bloc (0, 1, 2…),
+    encodé en little-endian ; les données qui suivent sont en big-endian.
+    """
     buf = bytearray(20)
-    buf[0] = (index >> 8) & 0xFF
-    buf[1] = index & 0xFF
+    buf[0] = index & 0xFF
+    buf[1] = (index >> 8) & 0xFF
     for i, word in enumerate(values[:9]):
         buf[2 + i * 2] = (word >> 8) & 0xFF
         buf[3 + i * 2] = word & 0xFF

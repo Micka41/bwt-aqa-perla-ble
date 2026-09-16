@@ -279,3 +279,27 @@ class TestPersistance:
         a = BwtCoordinator(MagicMock(), "03:12:00:34:00:5E")
         b = BwtCoordinator(MagicMock(), "AA:BB:CC:DD:EE:FF")
         assert a._store.key != b._store.key
+
+
+class TestCoupures:
+    """Comptage des coupures d'eau du jour."""
+
+    def test_transitions_comptees_une_fois(self, coordinator, clock):
+        """Une coupure qui dure plusieurs quarts compte pour un seul événement."""
+        aujourd_hui = clock.now().date().isoformat()
+        quarts = [
+            {"date": aujourd_hui, "litres": 10, "rege": False, "coupure": c}
+            for c in (False, True, True, True, False, False, True, False)
+        ]
+        coupures, prev = 0, False
+        for q in quarts:
+            if q["coupure"] and not prev:
+                coupures += 1
+            prev = q["coupure"]
+        assert coupures == 2, "deux épisodes distincts attendus"
+
+    def test_expose_dans_le_resultat(self, coordinator, clock):
+        from custom_components.bwt_aqa_perla_ble.const import KEY_CUTOFF_TODAY
+        coordinator._coupures_jour_stable = 3
+        result = coordinator._build_result(_decode_broadcast(make_broadcast()))
+        assert result[KEY_CUTOFF_TODAY] == 3

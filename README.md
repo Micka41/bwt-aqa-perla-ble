@@ -25,7 +25,7 @@ Native Home Assistant integration for the **BWT AQA Perla** water softener via B
 - 🔵 **Native BLE** — uses Home Assistant's Bluetooth stack
 - 📡 **Bluetooth proxy support** — works with ESPHome proxies (no USB BLE adapter needed)
 - 🔍 **Auto-discovery** — detects the BWT automatically via BLE service UUID
-- 📊 **11 sensors** — salt level, water consumption, regenerations, salt autonomy
+- 📊 **16 entities** — salt level, water consumption, regenerations, water cutoffs, salt autonomy, diagnostics
 - 🌍 **Multilingual** — French, English, German, Italian
 
 ## Sensors
@@ -37,14 +37,17 @@ Native Home Assistant integration for the **BWT AQA Perla** water softener via B
 | Salt capacity | kg | Total brine tank capacity |
 | Consumption today | L | Water softened since midnight |
 | Consumption yesterday | L | Water softened the previous day |
-| Consumption week | L | Water softened over the last 7 days |
-| Consumption average (30 days) | L | Average daily water consumption |
-| Regenerations today | — | Regeneration cycles today |
-| Salt autonomy (days) | days | Estimated days of salt remaining |
+| Consumption 7 days | L | Water softened over the last 7 days |
+| Regenerations today | regenerations | Regeneration cycles today |
+| Water cutoffs today | cutoffs | Water supply interruptions detected today |
+| Salt autonomy | days | Estimated days of salt remaining |
 | Salt autonomy (weeks) | weeks | Estimated weeks of salt remaining |
 | Salt autonomy end date | — | Estimated date when salt runs out |
-| Salt alarm | — | "OK" or "Alarm" |
+| Average daily consumption 30 days | L | Average daily water consumption |
+| Last sync | — | Last successful BLE sync |
 | Firmware | — | Device firmware version |
+| BROADCAST frames (debug) | — | Raw BROADCAST frames (disabled by default) |
+| Salt alarm | — | "OK" or "Alarm" |
 
 ## Diagnostic Entity
  

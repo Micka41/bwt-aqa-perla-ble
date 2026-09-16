@@ -64,6 +64,7 @@ from .const import (
     KEY_CONSUMPTION_YESTERDAY,
     KEY_CONSUMPTION_WEEK,
     KEY_REGEN_TODAY,
+    KEY_CUTOFF_TODAY,
     KEY_SALT_AUTONOMY_DAYS,
     KEY_SALT_AUTONOMY_WEEKS,
     KEY_SALT_AUTONOMY_DATE,
@@ -74,6 +75,9 @@ from .const import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+# Une notification transporte au plus 9 mots de 16 bits
+_ENTREES_PAR_NOTIF = 9
 
 _CYCLES_PAR_COMPLET = (INTERVALLE_COMPLET_H * 3600) // INTERVALLE_RAPIDE_S
 
@@ -88,6 +92,31 @@ def _get_word_from(buf: bytes, index: int, first_min: bool) -> int:
     a = buf[index + 1] & 0xFF
     b = buf[index]     & 0xFF
     return (a * 256 + b) if first_min else (b * 256 + a)
+
+
+def _dater_entrees(
+    entrees: list[dict],
+    idx_courant: int,
+    taille_buffer: int,
+    ancre,
+    pas: timedelta,
+) -> list[dict]:
+    """Date des entrées d'après leur index absolu dans le buffer circulaire.
+
+    L'entrée d'index `idx_courant - 1` est la plus récente et reçoit `ancre` ;
+    les autres reculent d'un `pas` par cran d'écart. Passer par l'index plutôt
+    que par la position dans la liste rend la datation insensible aux entrées
+    manquantes — une seule absence décalait auparavant tout le calendrier.
+    """
+    return [
+        {
+            **e,
+            "date": (
+                ancre - pas * ((idx_courant - 1 - e["idx"]) % taille_buffer)
+            ),
+        }
+        for e in entrees
+    ]
 
 
 def _decode_broadcast(buf: bytes) -> dict[str, Any]:
@@ -111,7 +140,14 @@ def _decode_broadcast(buf: bytes) -> dict[str, Any]:
     
     capa_total = _get_word_le(buf, 10) * 1000
     flags      = buf[12]
-    pct        = max(0, min(100, (qte_sel * 100) // capa_total)) if capa_total > 0 else 0
+    # Le pourcentage suit la logique de l'application d'origine : une valeur
+    # délirante (> 50000 %) signale une trame incohérente et vaut 0, pas 100 —
+    # afficher « plein » sur une donnée aberrante serait trompeur.
+    if capa_total > 0:
+        pct = (qte_sel * 100) // capa_total
+        pct = 0 if pct > 50000 else max(0, min(100, pct))
+    else:
+        pct = 0
     
     _LOGGER.debug(
         "BROADCAST decoded: qte_sel=%d g (%.2f kg), capa_total=%d g (%.2f kg), "
@@ -155,9 +191,17 @@ def _decode_notification(buf: bytes, is_quart: bool) -> tuple[int, list[dict]]:
         if word > 32767:
             break
         if is_quart:
-            entries.append({"litres": word & 0x03FF, "rege": bool(word & 0x0800)})
+            entries.append({
+                "litres":  word & 0x03FF,
+                "rege":    bool(word & 0x0800),
+                "coupure": bool(word & 0x0400),
+            })
         else:
-            entries.append({"litres": (word & 0x07FF) * 10, "rege": (word >> 12) & 0x03})
+            entries.append({
+                "litres":  (word & 0x07FF) * 10,
+                "rege":    (word >> 12) & 0x03,
+                "coupure": bool(word & 0x0800),
+            })
     return index, entries
 
 
@@ -194,7 +238,7 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._conso_hier_stable:    int = 0
         self._conso_semaine_stable: int = 0
         self._regens_jour_stable:   int = 0
-        self._regens_hier_stable:   int = 0
+        self._coupures_jour_stable: int = 0
         self._date_hier_stable:     str = ""
         self._firmware:             str = ""
 
@@ -445,20 +489,27 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         client, ADRESSE_TAB_JOUR, 0, idx_j, is_quart=False
                     )
 
-        # Assigner les dates ET heures aux quarts (ancre = dernier quart terminé)
+        # Dater les quarts d'après leur index absolu dans le buffer.
+        # L'entrée idx_q - 1 est la plus récente : elle correspond au dernier
+        # quart d'heure terminé. Les autres s'en déduisent en remontant le
+        # buffer, ce qui reste juste même si des entrées manquent à la lecture.
         _now     = dt_util.now()
         _min_arr = (_now.minute // 15) * 15
         ancre_q  = _now.replace(minute=_min_arr, second=0, microsecond=0) - timedelta(minutes=15)
         quarts_dates = [
-            {**q, "date": (ancre_q - timedelta(minutes=15 * (len(quarts) - 1 - i))).strftime("%Y-%m-%d")}
-            for i, q in enumerate(quarts)
+            {**q, "date": q["date"].strftime("%Y-%m-%d")}
+            for q in _dater_entrees(
+                quarts, idx_q, MAX_TAB_QUART, ancre_q, timedelta(minutes=15)
+            )
         ]
 
-        # Assigner les dates aux jours (ancre = hier)
+        # Même principe pour les jours : idx_j - 1 correspond à hier.
         hier_d = dt_util.now().date() - timedelta(days=1)
         jours_dates = [
-            {**j, "date": (hier_d - timedelta(days=(len(jours) - 1 - i))).isoformat()}
-            for i, j in enumerate(jours)
+            {**j, "date": j["date"].isoformat()}
+            for j in _dater_entrees(
+                jours, idx_j, MAX_TAB_JOUR, hier_d, timedelta(days=1)
+            )
         ]
 
         # Recalibrer conso jour depuis les quarts d'aujourd'hui
@@ -469,13 +520,19 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._litres_jour_total = self._litres_jour_base
         self._date_dernier_complet = aujourd_hui_str
 
-        # Régénérations du jour : transitions False → True dans les quarts d'aujourd'hui
-        regens, prev = 0, False
+        # Régénérations et coupures du jour : on compte les transitions
+        # False → True, car un même événement s'étale sur plusieurs quarts.
+        regens, prev_rege = 0, False
+        coupures, prev_coupure = 0, False
         for q in quarts_auj:
-            if q["rege"] and not prev:
+            if q["rege"] and not prev_rege:
                 regens += 1
-            prev = q["rege"]
-        self._regens_jour_stable = regens
+            prev_rege = q["rege"]
+            if q.get("coupure") and not prev_coupure:
+                coupures += 1
+            prev_coupure = q.get("coupure", False)
+        self._regens_jour_stable   = regens
+        self._coupures_jour_stable = coupures
 
         # Hier / semaine
         self._mettre_a_jour_hier_semaine({j["date"]: j for j in jours_dates})
@@ -628,7 +685,12 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         nb: int,
         is_quart: bool,
     ) -> list[dict]:
-        """Lit nb entrées en envoyant des commandes READ_BUFFER par blocs de 90."""
+        """Lit nb entrées en envoyant des commandes READ_BUFFER par blocs de 90.
+
+        Chaque entrée retournée porte une clé `idx` : son index absolu dans le
+        buffer circulaire, sur lequel repose la datation.
+        """
+        taille_buffer = MAX_TAB_QUART if is_quart else MAX_TAB_JOUR
         BLOCK_SIZE = 90
         resultats: list[dict] = []
         restant = nb
@@ -652,9 +714,35 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     f"({bloc} entries expected, {len(resultats)} read so far)"
                 )
 
-            for notif in self._notifications:
-                _, entries = _decode_notification(notif, is_quart)
-                resultats.extend(entries)
+            # Chaque entrée porte son index absolu dans le buffer circulaire.
+            # Dater d'après la position dans la liste serait fragile : une
+            # sentinelle 0xFFFF interrompt le décodage d'une notification, et
+            # toutes les dates se décaleraient alors d'un cran.
+            # Les deux premiers octets de chaque trame portent un numéro de
+            # séquence, remis à zéro au début de chaque bloc : la trame n doit
+            # annoncer n. Un écart signale une trame perdue ou hors d'ordre,
+            # auquel cas les entrées suivantes ne correspondent plus aux index
+            # attendus et la datation serait fausse.
+            attendues = 0
+            for n, notif in enumerate(self._notifications):
+                seq, entries = _decode_notification(notif, is_quart)
+                if seq != n:
+                    raise UpdateFailed(
+                        f"Frame sequence error @ {adresse:#x}: expected {n}, got {seq}"
+                    )
+
+                base = index_os + n * _ENTREES_PAR_NOTIF
+                resultats.extend(
+                    {**e, "idx": (base + k) % taille_buffer}
+                    for k, e in enumerate(entries)
+                )
+                attendues += len(entries)
+
+            if attendues < bloc:
+                _LOGGER.debug(
+                    "Block @ %#x: %d/%d entries decoded (unwritten buffer slots)",
+                    adresse, attendues, bloc,
+                )
 
             index_os += bloc
             restant  -= bloc
@@ -723,11 +811,13 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             else:
                 jours = []
 
-        # Assigner les dates (ancre = hier)
+        # Dater d'après l'index absolu : idx_j - 1 correspond à hier.
         hier_d = dt_util.now().date() - timedelta(days=1)
         return [
-            {**j, "date": (hier_d - timedelta(days=(len(jours) - 1 - i))).isoformat()}
-            for i, j in enumerate(jours)
+            {**j, "date": j["date"].isoformat()}
+            for j in _dater_entrees(
+                jours, idx_j, MAX_TAB_JOUR, hier_d, timedelta(days=1)
+            )
         ]
 
     async def service_total_consumption(self) -> dict:
@@ -772,6 +862,7 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             KEY_CONSUMPTION_YESTERDAY: self._conso_hier_stable if self._date_hier_stable != "" else None,
             KEY_CONSUMPTION_WEEK:      self._conso_semaine_stable if self._date_hier_stable != "" else None,
             KEY_REGEN_TODAY:           self._regens_jour_stable,
+            KEY_CUTOFF_TODAY:          self._coupures_jour_stable,
             KEY_SALT_AUTONOMY_DAYS:    self._autonomie_jours,
             KEY_SALT_AUTONOMY_WEEKS:   self._autonomie_semaines,
             KEY_SALT_AUTONOMY_DATE:    self._autonomie_date,

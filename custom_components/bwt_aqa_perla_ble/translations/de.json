@@ -37,13 +37,16 @@
         "name": "Verbrauch 7 Tage"
       },
       "regen_today": {
-        "name": "Regenerationen heute"
+        "name": "Regenerationen heute",
+        "unit_of_measurement": "Regenerationen"
       },
       "salt_autonomy_days": {
-        "name": "Salzautonomie (Tage)"
+        "name": "Salzautonomie",
+        "unit_of_measurement": "Tage"
       },
       "salt_autonomy_weeks": {
-        "name": "Salzautonomie (Wochen)"
+        "name": "Salzautonomie (Wochen)",
+        "unit_of_measurement": "Wochen"
       },
       "avg_daily_30d": {
         "name": "Durchschnittlicher Tagesverbrauch 30 Tage"
@@ -59,6 +62,10 @@
       },
       "debug_broadcast": {
         "name": "BROADCAST-Frames (Debug)"
+      },
+      "water_cutoff_today": {
+        "name": "Wasserunterbrechungen heute",
+        "unit_of_measurement": "Unterbrechungen"
       }
     },
     "binary_sensor": {

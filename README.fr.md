@@ -25,7 +25,7 @@ Intégration native Home Assistant pour l'adoucisseur d'eau **BWT AQA Perla** vi
 - 🔵 **BLE natif** — utilise la pile Bluetooth de Home Assistant
 - 📡 **Support proxy Bluetooth** — fonctionne avec les proxys ESPHome (pas besoin d'adaptateur USB BLE)
 - 🔍 **Auto-découverte** — détecte automatiquement le BWT via son UUID de service BLE
-- 📊 **14 entités** — niveau de sel, consommation d'eau, régénérations, autonomie sel, données de diagnostic
+- 📊 **16 entités** — niveau de sel, consommation d'eau, régénérations, coupures d'eau, autonomie sel, données de diagnostic
 - 🌍 **Multilingue** — Français, Anglais, Allemand, Italien
 
 ## Capteurs
@@ -37,14 +37,17 @@ Intégration native Home Assistant pour l'adoucisseur d'eau **BWT AQA Perla** vi
 | Capacité sel | kg | Capacité totale du bac à sel |
 | Consommation aujourd'hui | L | Eau adoucie depuis minuit |
 | Consommation hier | L | Eau adoucie la veille |
-| Consommation semaine | L | Eau adoucie sur les 7 derniers jours |
-| Consommation moyenne (30 jours) | L | Consommation quotidienne moyenne |
-| Régénérations aujourd'hui | — | Cycles de régénération aujourd'hui |
-| Autonomie sel (jours) | jours | Estimation des jours de sel restants |
+| Consommation 7 jours | L | Eau adoucie sur les 7 derniers jours |
+| Régénérations aujourd'hui | régénérations | Cycles de régénération aujourd'hui |
+| Coupures d'eau aujourd'hui | coupures | Interruptions d'alimentation en eau détectées aujourd'hui |
+| Autonomie sel | jours | Estimation des jours de sel restants |
 | Autonomie sel (semaines) | semaines | Estimation des semaines de sel restantes |
 | Date fin autonomie | — | Date estimée d'épuisement du sel |
-| Alarme sel | — | "OK" ou "Alarme" |
+| Consommation moyenne 30 jours | L | Consommation quotidienne moyenne |
+| Dernière synchronisation | — | Dernière synchronisation BLE réussie |
 | Firmware | — | Version firmware de l'appareil |
+| Trames BROADCAST (debug) | — | Trames BROADCAST brutes (désactivée par défaut) |
+| Alarme sel | — | « OK » ou « Alarme » |
 
 
 ## Entité de diagnostic

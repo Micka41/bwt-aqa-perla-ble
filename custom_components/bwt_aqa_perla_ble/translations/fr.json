@@ -37,13 +37,16 @@
         "name": "Consommation 7 jours"
       },
       "regen_today": {
-        "name": "Régénérations aujourd'hui"
+        "name": "Régénérations aujourd'hui",
+        "unit_of_measurement": "régénérations"
       },
       "salt_autonomy_days": {
-        "name": "Autonomie sel (jours)"
+        "name": "Autonomie sel",
+        "unit_of_measurement": "jours"
       },
       "salt_autonomy_weeks": {
-        "name": "Autonomie sel (semaines)"
+        "name": "Autonomie sel (semaines)",
+        "unit_of_measurement": "semaines"
       },
       "avg_daily_30d": {
         "name": "Consommation moyenne 30 jours"
@@ -59,6 +62,10 @@
       },
       "debug_broadcast": {
         "name": "Trames BROADCAST (debug)"
+      },
+      "water_cutoff_today": {
+        "name": "Coupures d'eau aujourd'hui",
+        "unit_of_measurement": "coupures"
       }
     },
     "binary_sensor": {

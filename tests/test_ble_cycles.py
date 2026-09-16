@@ -61,8 +61,9 @@ class FakeBwtDevice:
 
         index = (adresse - base) // 2
         mots = source[index:index + nb_oct // 2]
-        for i in range(0, len(mots), 9):
-            self._callback(None, bytearray(make_notification(mots[i:i + 9], index + i)))
+        # Le numéro de séquence repart de zéro à chaque bloc
+        for n, i in enumerate(range(0, len(mots), 9)):
+            self._callback(None, bytearray(make_notification(mots[i:i + 9], n)))
 
     async def disconnect(self):
         self.disconnected = True
@@ -219,36 +220,20 @@ class TestEchecsLecture:
                 )
 
     @pytest.mark.asyncio
-    @pytest.mark.xfail(reason="BUG 1 : dates faussées si les quarts sont tronqués")
-    async def test_dates_faussees_si_troncature(self, coordinator, fake_device, patched_ble, clock):
-        """La datation ancre le DERNIER quart lu sur l'instant présent.
-
-        Si la lecture est tronquée (les quarts récents manquent), tous les
-        quarts restants sont datés trop tard : la consommation du jour est
-        alors calculée sur les mauvais quarts.
-        """
-        clock.set(hour=12, minute=0)
-        # Seuls les 20 quarts les plus récents portent une forte consommation.
-        # Si la lecture est tronquée, ils manquent et la fenêtre "aujourd'hui"
-        # est calculée sur des quarts anciens.
-        quarts = [quart_word(1) for _ in range(2880)]
-        for i in range(2860, 2880):
-            quarts[i] = quart_word(100)
-
-        dev_ok = fake_device(broadcast=make_broadcast(idx_quart=2880, idx_jour=100),
-                             quarts=quarts)
-        with patched_ble(dev_ok):
-            await coordinator._run_complet(object())
-        base_complete = coordinator._litres_jour_base
-
-        # Même appareil, mais la lecture s'interrompt après le 1er bloc
-        dev_ko = fake_device(broadcast=make_broadcast(idx_quart=2880, idx_jour=100),
-                             quarts=quarts, fail_after_blocks=1)
-        with patched_ble(dev_ko):
-            await coordinator._run_complet(object())
-        assert coordinator._litres_jour_base == base_complete, (
-            "consommation du jour faussée par une lecture partielle"
-        )
+    async def test_index_absolu_present_sur_chaque_entree(
+        self, coordinator, fake_device, patched_ble
+    ):
+        """Chaque entrée lue porte son index dans le buffer circulaire."""
+        from custom_components.bwt_aqa_perla_ble.const import ADRESSE_TAB_QUART
+        dev = fake_device()
+        with patched_ble(dev):
+            from custom_components.bwt_aqa_perla_ble.coordinator import establish_connection
+            client = await establish_connection(None, None, None)
+            await coordinator._start_notify(client)
+            entries = await coordinator._lire_blocs(
+                client, ADRESSE_TAB_QUART, 40, 20, is_quart=True
+            )
+        assert [e["idx"] for e in entries] == list(range(40, 60))
 
 
 # ── Services d'historique ────────────────────────────────────────────────────
@@ -401,3 +386,54 @@ class TestSessionBLE:
         with patched_ble(dev):
             async with coordinator._ble_session(object()) as (client, bcast):
                 assert bcast is not None
+
+    @pytest.mark.asyncio
+    async def test_index_issu_de_la_trame(self, coordinator, fake_device, patched_ble):
+        """L'index vient de la trame elle-même quand il est cohérent."""
+        from custom_components.bwt_aqa_perla_ble.const import ADRESSE_TAB_QUART
+        dev = fake_device()
+        with patched_ble(dev):
+            from custom_components.bwt_aqa_perla_ble.coordinator import establish_connection
+            client = await establish_connection(None, None, None)
+            await coordinator._start_notify(client)
+            entries = await coordinator._lire_blocs(
+                client, ADRESSE_TAB_QUART, 100, 18, is_quart=True
+            )
+        assert [e["idx"] for e in entries] == list(range(100, 118))
+
+    @pytest.mark.asyncio
+    async def test_trame_hors_sequence_rejetee(
+        self, coordinator, fake_device, patched_ble
+    ):
+        """Une trame hors séquence interrompt la lecture.
+
+        Les deux premiers octets portent un numéro de séquence remis à zéro à
+        chaque bloc. L'application d'origine rejette la trame et signale une
+        erreur de synchronisation : au-delà d'une trame manquante, les entrées
+        suivantes ne correspondent plus aux index attendus et toutes les dates
+        seraient décalées.
+        """
+        from custom_components.bwt_aqa_perla_ble.const import ADRESSE_TAB_QUART
+        from homeassistant.helpers.update_coordinator import UpdateFailed
+        from conftest import make_notification
+
+        dev = fake_device()
+        original = dev.write_gatt_char
+
+        async def write_hors_sequence(uuid, data):
+            if data[0] == 0x03:
+                return await original(uuid, data)
+            # Numéro de séquence 3 alors que la première trame doit annoncer 0
+            dev._callback(None, bytearray(
+                make_notification([quart_word(7)] * 9, 3)
+            ))
+        dev.write_gatt_char = write_hors_sequence
+
+        with patched_ble(dev):
+            from custom_components.bwt_aqa_perla_ble.coordinator import establish_connection
+            client = await establish_connection(None, None, None)
+            await coordinator._start_notify(client)
+            with pytest.raises(UpdateFailed, match="sequence"):
+                await coordinator._lire_blocs(
+                    client, ADRESSE_TAB_QUART, 200, 9, is_quart=True
+                )

@@ -203,3 +203,45 @@ def test_toutes_les_cles_const_sont_utilisees():
     )
     orphelines = {c for c in cles if sources.count(c) <= 1}
     assert not orphelines, f"constantes définies mais inutilisées → {orphelines}"
+
+
+def test_unites_traduites_ou_universelles():
+    """Une unité est soit un symbole universel, soit traduite dans strings.json.
+
+    Home Assistant sait traduire les unités depuis 2024.11, via la clé
+    `unit_of_measurement` placée à côté du nom de l'entité. La documentation
+    impose alors de ne pas définir `native_unit_of_measurement` : les deux
+    mécanismes s'excluent.
+    """
+    from custom_components.bwt_aqa_perla_ble import sensor as sensor_mod
+
+    universelles = {"%", "kg", "L"}
+    traduites = {
+        cle for cle, val in charger("en")["entity"]["sensor"].items()
+        if "unit_of_measurement" in val
+    }
+
+    for desc in sensor_mod.SENSORS:
+        native = getattr(desc, "native_unit_of_measurement", None)
+        if native is not None:
+            assert native in universelles, (
+                f"{desc.key} : « {native} » n'est pas un symbole universel ; "
+                "utiliser une unité traduite dans strings.json"
+            )
+            assert desc.translation_key not in traduites, (
+                f"{desc.key} : unité définie deux fois — native et traduite"
+            )
+
+
+@pytest.mark.parametrize("langue", LANGUES)
+def test_unites_traduites_dans_toutes_les_langues(langue):
+    """Une unité traduite en anglais doit l'être dans les quatre langues."""
+    ref = {
+        cle for cle, val in charger("en")["entity"]["sensor"].items()
+        if "unit_of_measurement" in val
+    }
+    autre = {
+        cle for cle, val in charger(langue)["entity"]["sensor"].items()
+        if "unit_of_measurement" in val
+    }
+    assert autre == ref, f"{langue} : unités manquantes → {ref - autre}"
