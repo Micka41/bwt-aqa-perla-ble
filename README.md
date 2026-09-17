@@ -1,4 +1,4 @@
-# BWT AQA Perla BLE — Home Assistant Integration
+# <img src="./custom_components/bwt_aqa_perla_ble/brand/icon.png" alt="Icône BWT" width="48"> BWT AQA Perla BLE — Home Assistant Integration
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
 [![GitHub release](https://img.shields.io/github/release/Micka41/bwt-aqa-perla-ble.svg)](https://github.com/Micka41/bwt-aqa-perla-ble/releases)
@@ -16,7 +16,7 @@ Native Home Assistant integration for the **BWT AQA Perla** water softener via B
 
 > No MQTT broker required. Works with ESPHome Bluetooth proxies.
 
-<img src="res/bwt-aqa-perla-ble.png" alt="BWT AQA Perla" width="280">
+<img src="./res/bwt-aqa-perla-ble.png" alt="BWT AQA Perla" width="280">
 
 ---
 

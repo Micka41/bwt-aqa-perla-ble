@@ -1,4 +1,4 @@
-# BWT AQA Perla BLE — Intégration Home Assistant
+# <img src="./custom_components/bwt_aqa_perla_ble/brand/icon.png" alt="Icône BWT" width="48"> BWT AQA Perla BLE — Intégration Home Assistant
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
 [![GitHub release](https://img.shields.io/github/release/Micka41/bwt-aqa-perla-ble.svg)](https://github.com/Micka41/bwt-aqa-perla-ble/releases)
@@ -16,7 +16,7 @@ Intégration native Home Assistant pour l'adoucisseur d'eau **BWT AQA Perla** vi
 
 > Aucun broker MQTT requis. Fonctionne avec les proxys Bluetooth ESPHome.
 
-<img src="res/bwt-aqa-perla-ble.png" alt="BWT AQA Perla" width="280">
+<img src="./res/bwt-aqa-perla-ble.png" alt="BWT AQA Perla" width="280">
 
 ---
 
