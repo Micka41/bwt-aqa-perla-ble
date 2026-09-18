@@ -245,3 +245,35 @@ def test_unites_traduites_dans_toutes_les_langues(langue):
         if "unit_of_measurement" in val
     }
     assert autre == ref, f"{langue} : unités manquantes → {ref - autre}"
+
+
+def _entites_attendues():
+    """Toutes les entités exposées, sensors et binary_sensors confondus."""
+    from custom_components.bwt_aqa_perla_ble import sensor as sensor_mod
+    en = charger("en")["entity"]
+    noms = {en["sensor"][d.translation_key]["name"] for d in sensor_mod.SENSORS}
+    noms |= {v["name"] for v in en.get("binary_sensor", {}).values()}
+    return noms
+
+
+@pytest.mark.parametrize("fichier", ["README.md", "README.fr.md"])
+def test_readme_compte_les_entites_correctement(fichier):
+    """Le nombre annoncé dans les fonctionnalités doit être le nombre réel."""
+    import re
+    texte = (COMPONENT.parent.parent / fichier).read_text(encoding="utf-8")
+    m = re.search(r"\*\*(\d+)\s+(?:entities|entités)\*\*", texte)
+    assert m, f"{fichier} : nombre d'entités introuvable"
+    assert int(m.group(1)) == len(_entites_attendues()), (
+        f"{fichier} annonce {m.group(1)} entités, il y en a "
+        f"{len(_entites_attendues())}"
+    )
+
+
+def test_readme_anglais_liste_toutes_les_entites():
+    """Chaque entité doit figurer dans le tableau du README anglais."""
+    texte = (COMPONENT.parent.parent / "README.md").read_text(encoding="utf-8")
+    lignes = [l for l in texte.splitlines() if l.startswith("| ")]
+    for nom in _entites_attendues():
+        assert any(l.startswith(f"| {nom} |") for l in lignes), (
+            f"« {nom} » absente du tableau du README"
+        )

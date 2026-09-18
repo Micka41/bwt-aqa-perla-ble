@@ -402,38 +402,209 @@ class TestSessionBLE:
         assert [e["idx"] for e in entries] == list(range(100, 118))
 
     @pytest.mark.asyncio
-    async def test_trame_hors_sequence_rejetee(
+    async def test_numero_de_sequence_inattendu_tolere(
         self, coordinator, fake_device, patched_ble
     ):
-        """Une trame hors séquence interrompt la lecture.
+        """Un numéro de séquence inattendu ne doit pas faire échouer la lecture.
 
-        Les deux premiers octets portent un numéro de séquence remis à zéro à
-        chaque bloc. L'application d'origine rejette la trame et signale une
-        erreur de synchronisation : au-delà d'une trame manquante, les entrées
-        suivantes ne correspondent plus aux index attendus et toutes les dates
-        seraient décalées.
+        Le firmware A22X V1.18 annonce des numéros qui ne repartent pas de zéro
+        à chaque bloc (issue #10). La datation s'appuyant sur l'ordre d'arrivée
+        des trames, ces numéros sont seulement journalisés.
         """
         from custom_components.bwt_aqa_perla_ble.const import ADRESSE_TAB_QUART
-        from homeassistant.helpers.update_coordinator import UpdateFailed
         from conftest import make_notification
 
         dev = fake_device()
         original = dev.write_gatt_char
 
-        async def write_hors_sequence(uuid, data):
+        async def write_sequence_decalee(uuid, data):
             if data[0] == 0x03:
                 return await original(uuid, data)
-            # Numéro de séquence 3 alors que la première trame doit annoncer 0
             dev._callback(None, bytearray(
-                make_notification([quart_word(7)] * 9, 3)
+                make_notification([quart_word(7)] * 9, 6)   # annonce 6, pas 0
             ))
-        dev.write_gatt_char = write_hors_sequence
+        dev.write_gatt_char = write_sequence_decalee
 
         with patched_ble(dev):
             from custom_components.bwt_aqa_perla_ble.coordinator import establish_connection
             client = await establish_connection(None, None, None)
             await coordinator._start_notify(client)
-            with pytest.raises(UpdateFailed, match="sequence"):
-                await coordinator._lire_blocs(
-                    client, ADRESSE_TAB_QUART, 200, 9, is_quart=True
-                )
+            entries = await coordinator._lire_blocs(
+                client, ADRESSE_TAB_QUART, 200, 9, is_quart=True
+            )
+        # Les index restent déduits de la position, donc corrects
+        assert [e["idx"] for e in entries] == list(range(200, 209))
+
+    @pytest.mark.asyncio
+    async def test_trame_perdue_ne_decale_pas_les_index(
+        self, coordinator, fake_device, patched_ble
+    ):
+        """Une trame perdue laisse un trou, elle ne décale pas ce qui suit.
+
+        Sans le numéro de séquence, la deuxième trame reçue serait prise pour
+        la deuxième émise et ses neuf entrées seraient datées neuf crans trop
+        tôt — le décalage de l'issue #9 sous une autre forme.
+        """
+        from custom_components.bwt_aqa_perla_ble.const import ADRESSE_TAB_QUART
+        from conftest import make_notification
+
+        dev = fake_device()
+        original = dev.write_gatt_char
+
+        async def write_avec_trame_perdue(uuid, data):
+            if data[0] == 0x03:
+                return await original(uuid, data)
+            # Séquences 0 et 2 : la trame 1 ne nous est jamais parvenue
+            dev._callback(None, bytearray(make_notification([quart_word(1)] * 9, 0)))
+            dev._callback(None, bytearray(make_notification([quart_word(3)] * 9, 2)))
+        dev.write_gatt_char = write_avec_trame_perdue
+
+        with patched_ble(dev):
+            from custom_components.bwt_aqa_perla_ble.coordinator import establish_connection
+            client = await establish_connection(None, None, None)
+            await coordinator._start_notify(client)
+            entries = await coordinator._lire_blocs(
+                client, ADRESSE_TAB_QUART, 100, 27, is_quart=True
+            )
+
+        idx = [e["idx"] for e in entries]
+        assert idx[:9] == list(range(100, 109))
+        assert idx[9:] == list(range(118, 127)), (
+            "la trame 2 doit être placée à son rang réel, pas à la suite"
+        )
+
+    @pytest.mark.asyncio
+    async def test_premieres_trames_perdues(
+        self, coordinator, fake_device, patched_ble
+    ):
+        """Issue #10 : quand les premières trames manquent, le rang les situe.
+
+        La première trame reçue annonce 6 parce que les six précédentes se sont
+        perdues. Ses entrées appartiennent au rang 6, pas au rang 0 : les
+        compter dans l'ordre d'arrivée les daterait six trames trop tôt.
+        """
+        from custom_components.bwt_aqa_perla_ble.const import ADRESSE_TAB_QUART
+        from conftest import make_notification
+
+        dev = fake_device()
+        original = dev.write_gatt_char
+
+        async def write_debut_perdu(uuid, data):
+            if data[0] == 0x03:
+                return await original(uuid, data)
+            for rang in (6, 7):          # les rangs 0 à 5 ne sont jamais arrivés
+                dev._callback(None, bytearray(
+                    make_notification([quart_word(5)] * 9, rang)
+                ))
+        dev.write_gatt_char = write_debut_perdu
+
+        with patched_ble(dev):
+            from custom_components.bwt_aqa_perla_ble.coordinator import establish_connection
+            client = await establish_connection(None, None, None)
+            await coordinator._start_notify(client)
+            entries = await coordinator._lire_blocs(
+                client, ADRESSE_TAB_QUART, 300, 90, is_quart=True
+            )
+
+        # Rang 6 → index_os + 54, et non index_os
+        assert [e["idx"] for e in entries] == list(range(354, 372))
+
+    @pytest.mark.asyncio
+    async def test_trame_perdue_ne_decale_pas_les_index(
+        self, coordinator, fake_device, patched_ble
+    ):
+        """Une trame perdue laisse un trou, elle ne décale pas ce qui suit.
+
+        Sans le numéro de séquence, la deuxième trame reçue serait prise pour
+        la deuxième émise et ses neuf entrées seraient datées neuf crans trop
+        tôt — le décalage de l'issue #9 sous une autre forme.
+        """
+        from custom_components.bwt_aqa_perla_ble.const import ADRESSE_TAB_QUART
+        from conftest import make_notification
+
+        dev = fake_device()
+        original = dev.write_gatt_char
+
+        async def write_avec_trame_perdue(uuid, data):
+            if data[0] == 0x03:
+                return await original(uuid, data)
+            # Séquences 0 et 2 : la trame 1 ne nous est jamais parvenue
+            dev._callback(None, bytearray(make_notification([quart_word(1)] * 9, 0)))
+            dev._callback(None, bytearray(make_notification([quart_word(3)] * 9, 2)))
+        dev.write_gatt_char = write_avec_trame_perdue
+
+        with patched_ble(dev):
+            from custom_components.bwt_aqa_perla_ble.coordinator import establish_connection
+            client = await establish_connection(None, None, None)
+            await coordinator._start_notify(client)
+            entries = await coordinator._lire_blocs(
+                client, ADRESSE_TAB_QUART, 100, 27, is_quart=True
+            )
+
+        idx = [e["idx"] for e in entries]
+        assert idx[:9] == list(range(100, 109))
+        assert idx[9:] == list(range(118, 127)), (
+            "la trame 2 doit être placée à son rang réel, pas à la suite"
+        )
+
+    @pytest.mark.asyncio
+    async def test_sequence_ne_repartant_pas_de_zero(
+        self, coordinator, fake_device, patched_ble
+    ):
+        """Firmware V1.18 : la séquence se poursuit d'un bloc à l'autre (issue #10)."""
+        from custom_components.bwt_aqa_perla_ble.const import ADRESSE_TAB_QUART
+        from conftest import make_notification
+
+        dev = fake_device()
+        original = dev.write_gatt_char
+
+        async def write_depuis_six(uuid, data):
+            if data[0] == 0x03:
+                return await original(uuid, data)
+            for offset in (6, 7):
+                dev._callback(None, bytearray(
+                    make_notification([quart_word(5)] * 9, offset)
+                ))
+        dev.write_gatt_char = write_depuis_six
+
+        with patched_ble(dev):
+            from custom_components.bwt_aqa_perla_ble.coordinator import establish_connection
+            client = await establish_connection(None, None, None)
+            await coordinator._start_notify(client)
+            entries = await coordinator._lire_blocs(
+                client, ADRESSE_TAB_QUART, 300, 18, is_quart=True
+            )
+        assert [e["idx"] for e in entries] == list(range(300, 318))
+
+    @pytest.mark.asyncio
+    async def test_repli_si_le_champ_nest_pas_un_compteur(
+        self, coordinator, fake_device, patched_ble
+    ):
+        """Un champ au comportement imprévisible ne doit pas corrompre la datation.
+
+        Si les numéros reculent ou dépassent le bloc demandé, ce n'est pas un
+        compteur de séquence : l'ordre d'arrivée reprend la main.
+        """
+        from custom_components.bwt_aqa_perla_ble.const import ADRESSE_TAB_QUART
+        from conftest import make_notification
+
+        dev = fake_device()
+        original = dev.write_gatt_char
+
+        async def write_incoherent(uuid, data):
+            if data[0] == 0x03:
+                return await original(uuid, data)
+            for valeur in (500, 12, 999):      # ni monotone, ni borné
+                dev._callback(None, bytearray(
+                    make_notification([quart_word(2)] * 9, valeur)
+                ))
+        dev.write_gatt_char = write_incoherent
+
+        with patched_ble(dev):
+            from custom_components.bwt_aqa_perla_ble.coordinator import establish_connection
+            client = await establish_connection(None, None, None)
+            await coordinator._start_notify(client)
+            entries = await coordinator._lire_blocs(
+                client, ADRESSE_TAB_QUART, 400, 27, is_quart=True
+            )
+        assert [e["idx"] for e in entries] == list(range(400, 427))

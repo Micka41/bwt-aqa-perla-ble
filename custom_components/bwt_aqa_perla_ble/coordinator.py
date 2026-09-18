@@ -718,20 +718,42 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # Dater d'après la position dans la liste serait fragile : une
             # sentinelle 0xFFFF interrompt le décodage d'une notification, et
             # toutes les dates se décaleraient alors d'un cran.
-            # Les deux premiers octets de chaque trame portent un numéro de
-            # séquence, remis à zéro au début de chaque bloc : la trame n doit
-            # annoncer n. Un écart signale une trame perdue ou hors d'ordre,
-            # auquel cas les entrées suivantes ne correspondent plus aux index
-            # attendus et la datation serait fausse.
+            # Les deux premiers octets portent un numéro de séquence. Selon le
+            # firmware il repart de zéro à chaque bloc (A22X V1.21) ou se
+            # poursuit d'un bloc à l'autre (V1.18, issue #10) : on ne compare
+            # donc pas à une valeur absolue, mais à la première trame du bloc.
+            #
+            # Cet écart relatif situe la trame même si l'une d'elles s'est
+            # perdue en route : le numéro saute, l'offset suit, et les dates
+            # restent justes là où un simple comptage les décalerait.
             attendues = 0
+            seq_origine: int | None = None
+
             for n, notif in enumerate(self._notifications):
                 seq, entries = _decode_notification(notif, is_quart)
-                if seq != n:
-                    raise UpdateFailed(
-                        f"Frame sequence error @ {adresse:#x}: expected {n}, got {seq}"
+
+                if seq_origine is None:
+                    seq_origine = seq
+                ecart = seq - seq_origine if seq >= 0 else n
+
+                # Un écart qui recule ou dépasse le bloc demandé signale un
+                # champ qui ne se comporte pas comme un compteur : on retombe
+                # alors sur l'ordre d'arrivée.
+                if not 0 <= ecart <= bloc // _ENTREES_PAR_NOTIF:
+                    _LOGGER.debug(
+                        "Frame sequence @ %#x: position %d announces %d "
+                        "(origin %d) — falling back to arrival order",
+                        adresse, n, seq, seq_origine,
+                    )
+                    ecart = n
+                elif ecart != n:
+                    _LOGGER.debug(
+                        "Frame gap @ %#x: position %d announces offset %d — "
+                        "a frame was likely lost",
+                        adresse, n, ecart,
                     )
 
-                base = index_os + n * _ENTREES_PAR_NOTIF
+                base = index_os + ecart * _ENTREES_PAR_NOTIF
                 resultats.extend(
                     {**e, "idx": (base + k) % taille_buffer}
                     for k, e in enumerate(entries)
