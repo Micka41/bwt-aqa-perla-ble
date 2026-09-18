@@ -548,10 +548,15 @@ class TestSessionBLE:
         )
 
     @pytest.mark.asyncio
-    async def test_sequence_ne_repartant_pas_de_zero(
+    async def test_rang_hors_du_bloc_demande(
         self, coordinator, fake_device, patched_ble
     ):
-        """Firmware V1.18 : la séquence se poursuit d'un bloc à l'autre (issue #10)."""
+        """Un rang supérieur à la taille du bloc n'est pas un rang plausible.
+
+        Ici le bloc ne compte que deux trames, mais la première annonce 6 :
+        le champ ne peut pas désigner une position dans ce bloc, donc l'ordre
+        d'arrivée reprend la main.
+        """
         from custom_components.bwt_aqa_perla_ble.const import ADRESSE_TAB_QUART
         from conftest import make_notification
 

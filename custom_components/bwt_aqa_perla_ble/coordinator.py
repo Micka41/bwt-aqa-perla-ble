@@ -718,42 +718,38 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # Dater d'après la position dans la liste serait fragile : une
             # sentinelle 0xFFFF interrompt le décodage d'une notification, et
             # toutes les dates se décaleraient alors d'un cran.
-            # Les deux premiers octets portent un numéro de séquence. Selon le
-            # firmware il repart de zéro à chaque bloc (A22X V1.21) ou se
-            # poursuit d'un bloc à l'autre (V1.18, issue #10) : on ne compare
-            # donc pas à une valeur absolue, mais à la première trame du bloc.
+            # Les deux premiers octets donnent le rang de la trame dans le
+            # bloc demandé : la trame k porte les entrées index_os + k*9 et
+            # suivantes. On s'en sert pour placer les entrées, plutôt que de
+            # compter les trames reçues.
             #
-            # Cet écart relatif situe la trame même si l'une d'elles s'est
-            # perdue en route : le numéro saute, l'offset suit, et les dates
-            # restent justes là où un simple comptage les décalerait.
+            # La nuance est décisive quand des trames se perdent en route
+            # (issue #10) : la première reçue peut annoncer 6, et ses entrées
+            # appartiennent bien au rang 6. Les compter dans l'ordre d'arrivée
+            # les daterait six trames trop tôt.
             attendues = 0
-            seq_origine: int | None = None
+            rang_max = bloc // _ENTREES_PAR_NOTIF
 
             for n, notif in enumerate(self._notifications):
-                seq, entries = _decode_notification(notif, is_quart)
+                rang, entries = _decode_notification(notif, is_quart)
 
-                if seq_origine is None:
-                    seq_origine = seq
-                ecart = seq - seq_origine if seq >= 0 else n
-
-                # Un écart qui recule ou dépasse le bloc demandé signale un
-                # champ qui ne se comporte pas comme un compteur : on retombe
-                # alors sur l'ordre d'arrivée.
-                if not 0 <= ecart <= bloc // _ENTREES_PAR_NOTIF:
+                if not 0 <= rang <= rang_max:
+                    # Le champ ne se comporte pas comme un rang : on retombe
+                    # sur l'ordre d'arrivée.
                     _LOGGER.debug(
-                        "Frame sequence @ %#x: position %d announces %d "
-                        "(origin %d) — falling back to arrival order",
-                        adresse, n, seq, seq_origine,
+                        "Frame rank @ %#x: position %d announces %d "
+                        "(max %d) — falling back to arrival order",
+                        adresse, n, rang, rang_max,
                     )
-                    ecart = n
-                elif ecart != n:
+                    rang = n
+                elif rang != n:
                     _LOGGER.debug(
-                        "Frame gap @ %#x: position %d announces offset %d — "
-                        "a frame was likely lost",
-                        adresse, n, ecart,
+                        "Frame gap @ %#x: position %d has rank %d — "
+                        "%d frame(s) lost before it",
+                        adresse, n, rang, rang - n,
                     )
 
-                base = index_os + ecart * _ENTREES_PAR_NOTIF
+                base = index_os + rang * _ENTREES_PAR_NOTIF
                 resultats.extend(
                     {**e, "idx": (base + k) % taille_buffer}
                     for k, e in enumerate(entries)
