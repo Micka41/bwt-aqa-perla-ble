@@ -9,11 +9,15 @@ composant, qui est donc testé tel quel, sans modification.
 Depuis la racine du dépôt :
 
 ```bash
-pip install pytest pytest-asyncio
+pip install -r requirements-test.txt
 python3 -m pytest -q                              # tout
 python3 -m pytest -v                              # détaillé
 python3 -m pytest tests/test_logic.py::TestAutonomie   # une classe
 ```
+
+Un test qui dépasse 30 secondes est interrompu par `pytest-timeout` : le
+dépassement signale une attente réelle laissée dans le code, les délais BLE
+étant raccourcis par les fixtures.
 
 Les tests tournent aussi en CI à chaque push et pull request
 (`.github/workflows/tests.yml`, Python 3.12 et 3.13).
@@ -81,3 +85,31 @@ Ces tests verrouillent des bugs déjà corrigés, pour qu'ils ne reviennent pas 
   bloquant les capteurs sur « indisponible »
 - `test_firmware_v2_divides_by_four` et la série de calibration — issue #4
 
+
+## Pourquoi pas pytest-homeassistant-custom-component
+
+C'est le plugin de référence pour tester une intégration Home Assistant : il
+fournit une instance réelle de HA et ses fixtures officielles (`hass`,
+`MockConfigEntry`), ce qui permet de tester le flux de configuration, le
+registre d'entités et l'enregistrement des services pour de vrai.
+
+Il n'est pas utilisé ici, pour deux raisons.
+
+**Chaque version du plugin est épinglée à une version de Home Assistant.** Il
+faudrait la relever à chaque publication mensuelle, faute de quoi la CI
+validerait le composant contre une version périmée.
+
+**Il est incompatible avec l'approche par doublures.** `conftest.py` injecte de
+faux modules `homeassistant` dans `sys.modules` ; avec le vrai Home Assistant
+installé, ces doublures le masqueraient. Adopter le plugin demanderait de
+réécrire l'ensemble de la suite.
+
+Le compromis retenu privilégie ce que ce composant a de spécifique : le
+décodage du protocole BLE, la datation des entrées, les buffers circulaires et
+les règles de consolidation — du code qui n'a besoin d'aucun Home Assistant
+pour être vérifié, et qui se teste en moins d'une seconde.
+
+Ce que la suite ne couvre donc pas, et qu'un passage au plugin apporterait :
+le flux de configuration, la découverte Bluetooth, le cycle de vie de l'entrée
+de configuration et le rendu réel des entités. Ces parties restent validées par
+l'usage.

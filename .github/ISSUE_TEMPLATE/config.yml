@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question or help with setup
+    url: https://github.com/Micka41/bwt-aqa-perla-ble/discussions
+    about: For questions about installation, configuration or how something works.
+  - name: Troubleshooting guide
+    url: https://github.com/Micka41/bwt-aqa-perla-ble#troubleshooting
+    about: Sensors unavailable, integration failing to load — start here.
+  - name: A different BWT model
+    url: https://github.com/Micka41/bwt-aqa-perla-ble/issues/7
+    about: This integration targets the AQA Perla. Other models use different protocols.

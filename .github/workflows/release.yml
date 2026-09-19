@@ -1,0 +1,81 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag de la release à (re)construire"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  DOMAIN: bwt_aqa_perla_ble
+
+jobs:
+  build:
+    name: Construire et publier l'archive
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 1/5 📥 Récupération du dépôt
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: 2/5 🔍 Vérification de la version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TAG="${{ github.event.inputs.tag || github.event.release.tag_name }}"
+          TAG="${TAG#v}"
+          MANIFEST=$(jq -r .version "custom_components/${DOMAIN}/manifest.json")
+
+          echo "    tag      : ${TAG}"
+          echo "    manifest : ${MANIFEST}"
+
+          if [ "${TAG}" != "${MANIFEST}" ]; then
+            echo "    ❌ le manifest annonce ${MANIFEST}, la release ${TAG}"
+            echo "       corrigez manifest.json puis recréez le tag"
+            exit 1
+          fi
+          echo "    ✅ versions concordantes"
+
+      - name: 3/5 🧪 Exécution des tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          pip install --quiet -r requirements-test.txt
+          python -m pytest -q
+          echo "    ✅ suite de tests au vert"
+
+      - name: 4/5 📦 Construction de l'archive
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # HACS extrait l'archive directement dans custom_components/<domain>/ :
+          # elle doit donc contenir les fichiers à sa racine, sans dossier parent.
+          cd "custom_components/${DOMAIN}"
+          zip -qr "${GITHUB_WORKSPACE}/${DOMAIN}.zip" . \
+            -x "*__pycache__*" "*.pyc"
+
+          cd "${GITHUB_WORKSPACE}"
+          echo "    Contenu :"
+          unzip -l "${DOMAIN}.zip" | tail -n +4 | head -n -2 | awk '{print "      " $4}'
+
+          if ! unzip -l "${DOMAIN}.zip" | grep -q " manifest.json$"; then
+            echo "    ❌ manifest.json absent de la racine de l'archive"
+            exit 1
+          fi
+          echo "    ✅ ${DOMAIN}.zip prête ($(du -h "${DOMAIN}.zip" | cut -f1))"
+
+      - name: 5/5 🚀 Publication sur la release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.event.release.tag_name }}
+          files: ${{ env.DOMAIN }}.zip

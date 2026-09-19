@@ -23,7 +23,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: pip install pytest pytest-asyncio
+        run: pip install -r requirements-test.txt
 
       - name: Run tests
         run: python -m pytest -v

@@ -5,13 +5,22 @@ body:
   - type: markdown
     attributes:
       value: |
-        Please fill in all fields to help diagnose the issue.
+        Thanks for taking the time to report this.
+
+        **Two quick checks first** — they resolve most reports:
+
+        - Restarting Home Assistant does **not** reset BlueZ. If connections
+          keep failing, only a **host reboot** clears a degraded Bluetooth
+          stack. See the [Troubleshooting section](https://github.com/Micka41/bwt-aqa-perla-ble#troubleshooting).
+        - "Yesterday" and "week" sensors stay unavailable until the softener
+          consolidates the previous day, around 04:00. This is expected on the
+          first day after installation.
 
   - type: input
     id: ha_version
     attributes:
       label: Home Assistant version
-      placeholder: "e.g. 2024.12.0"
+      placeholder: "e.g. 2026.9.0"
     validations:
       required: true
 
@@ -19,7 +28,8 @@ body:
     id: integration_version
     attributes:
       label: Integration version
-      placeholder: "e.g. 2.0.0"
+      description: Settings → Devices & Services → BWT AQA Perla BLE
+      placeholder: "e.g. 2026.9.3"
     validations:
       required: true
 
@@ -27,8 +37,45 @@ body:
     id: firmware
     attributes:
       label: BWT firmware version
-      description: Visible in the Firmware sensor
-      placeholder: "e.g. A22X V1.23"
+      description: Shown by the Firmware sensor (disabled by default — enable it on the device page)
+      placeholder: "e.g. A22X V1.21"
+    validations:
+      required: false
+
+  - type: dropdown
+    id: frequency
+    attributes:
+      label: How often does it happen?
+      description: |
+        This one matters more than it looks. An intermittent fault usually points
+        to dropped BLE frames, a consistent one to a decoding problem — the
+        investigation goes in opposite directions.
+      options:
+        - Every time
+        - Intermittently — sometimes it works
+        - Happened once
+        - Not sure yet
+    validations:
+      required: true
+
+  - type: dropdown
+    id: regression
+    attributes:
+      label: Did it work before?
+      options:
+        - It worked on a previous version — this is a regression
+        - It has never worked
+        - New install, no previous version
+        - Not sure
+    validations:
+      required: true
+
+  - type: input
+    id: last_good_version
+    attributes:
+      label: Last version that worked
+      description: Only if you answered "this is a regression" above
+      placeholder: "e.g. 2026.9.1"
     validations:
       required: false
 
@@ -38,8 +85,9 @@ body:
       label: Bluetooth setup
       options:
         - USB Bluetooth adapter
+        - Built-in adapter (Raspberry Pi, mini PC…)
         - ESPHome Bluetooth proxy
-        - Both
+        - Several proxies / mixed setup
     validations:
       required: true
 
@@ -47,25 +95,54 @@ body:
     id: rssi
     attributes:
       label: BLE signal strength (RSSI)
-      description: Visible in Settings → Integrations → Bluetooth
-      placeholder: "e.g. -72 dBm"
+      description: Settings → Devices & Services → Bluetooth. Below about -85 dBm, connections fail intermittently.
+      placeholder: "e.g. -72"
     validations:
       required: false
 
   - type: textarea
     id: description
     attributes:
-      label: Describe the bug
-      placeholder: What happened? What did you expect?
+      label: Describe the problem
+      description: |
+        What happened, and what did you expect instead? Screenshots of sensor
+        history are welcome — an oscillating or flat-lining graph often says
+        more than a log excerpt.
     validations:
       required: true
+
+  - type: textarea
+    id: affected_entities
+    attributes:
+      label: Which entities are affected
+      description: Entity IDs, or "all of them"
+      placeholder: "e.g. sensor.bwt_aqa_perla_consommation_hier"
+    validations:
+      required: false
+
+  - type: textarea
+    id: broadcast_frames
+    attributes:
+      label: BROADCAST frames (diagnostic entity)
+      description: |
+        For anything involving wrong values, this is the single most useful
+        piece of information.
+
+        Enable **BROADCAST frames (debug)** on the device page — it is disabled
+        by default — wait a couple of minutes, then open the entity and copy
+        the `frames` attribute.
+      render: text
+    validations:
+      required: false
 
   - type: textarea
     id: logs
     attributes:
       label: Relevant logs
       description: |
-        Enable debug logging in configuration.yaml:
+        Add this to `configuration.yaml`, restart, reproduce the problem, then
+        paste the lines mentioning `bwt_aqa_perla_ble`:
+
         ```yaml
         logger:
           logs:

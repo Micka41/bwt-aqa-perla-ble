@@ -1,0 +1,38 @@
+name: Feature request
+description: Suggest a new sensor, service or capability
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The integration can only expose what the softener actually transmits
+        over BLE. If you know the data exists — because the BWT app shows it —
+        say so: that makes it worth looking for in the protocol.
+
+  - type: textarea
+    id: need
+    attributes:
+      label: What would you like to do?
+      description: Describe the goal rather than the implementation — there may be a simpler way to get there.
+      placeholder: "e.g. be notified when a regeneration starts, to avoid using water during the cycle"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: source
+    attributes:
+      label: Does the BWT app show this information?
+      options:
+        - "Yes, the official app displays it"
+        - "No, but I think the device knows it"
+        - "Not sure"
+    validations:
+      required: true
+
+  - type: textarea
+    id: details
+    attributes:
+      label: Anything else
+      description: Screenshots of the official app, protocol details you may have found, related integrations…
+    validations:
+      required: false

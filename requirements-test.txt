@@ -1,0 +1,15 @@
+# Dépendances d'exécution de la suite de tests.
+#   pip install -r requirements-test.txt && python -m pytest
+#
+# La suite tourne sans installer Home Assistant : tests/conftest.py injecte des
+# doublures légères de `homeassistant` et `bleak`, ce qui la rend rapide (moins
+# d'une seconde) et indépendante du calendrier de publication de HA.
+#
+# Le plugin officiel `pytest-homeassistant-custom-component` n'est volontairement
+# pas utilisé : chacune de ses versions est épinglée à une version précise de
+# Home Assistant, et il est incompatible avec les doublures ci-dessus. Voir
+# tests/README.md pour ce qu'il apporterait et ce qu'il coûterait.
+
+pytest>=8.0
+pytest-asyncio>=0.23
+pytest-timeout>=2.3
