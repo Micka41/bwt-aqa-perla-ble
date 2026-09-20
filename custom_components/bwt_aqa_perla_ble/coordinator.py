@@ -718,38 +718,33 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # Dater d'après la position dans la liste serait fragile : une
             # sentinelle 0xFFFF interrompt le décodage d'une notification, et
             # toutes les dates se décaleraient alors d'un cran.
-            # Les deux premiers octets donnent le rang de la trame dans le
-            # bloc demandé : la trame k porte les entrées index_os + k*9 et
-            # suivantes. On s'en sert pour placer les entrées, plutôt que de
-            # compter les trames reçues.
+            # Les entrées sont situées par leur ordre d'arrivée : la n-ième
+            # trame d'un bloc porte les entrées index_os + n*9 et suivantes.
             #
-            # La nuance est décisive quand des trames se perdent en route
-            # (issue #10) : la première reçue peut annoncer 6, et ses entrées
-            # appartiennent bien au rang 6. Les compter dans l'ordre d'arrivée
-            # les daterait six trames trop tôt.
+            # Les deux premiers octets de chaque trame contiennent un compteur
+            # qui s'incrémente d'une trame à l'autre, mais son origine n'est
+            # pas celle du bloc : selon le firmware et les trames déjà émises,
+            # la première trame d'un bloc peut annoncer 0, 6 ou davantage. Il
+            # ne peut donc pas servir à placer les entrées — seulement à
+            # repérer un trou dans la série.
             attendues = 0
-            rang_max = bloc // _ENTREES_PAR_NOTIF
+            compteur_precedent: int | None = None
 
             for n, notif in enumerate(self._notifications):
-                rang, entries = _decode_notification(notif, is_quart)
+                compteur, entries = _decode_notification(notif, is_quart)
 
-                if not 0 <= rang <= rang_max:
-                    # Le champ ne se comporte pas comme un rang : on retombe
-                    # sur l'ordre d'arrivée.
-                    _LOGGER.debug(
-                        "Frame rank @ %#x: position %d announces %d "
-                        "(max %d) — falling back to arrival order",
-                        adresse, n, rang, rang_max,
-                    )
-                    rang = n
-                elif rang != n:
-                    _LOGGER.debug(
-                        "Frame gap @ %#x: position %d has rank %d — "
-                        "%d frame(s) lost before it",
-                        adresse, n, rang, rang - n,
-                    )
+                if compteur_precedent is not None and compteur >= 0:
+                    saut = compteur - compteur_precedent
+                    if saut != 1:
+                        _LOGGER.debug(
+                            "Frame counter @ %#x: %d after %d — %s",
+                            adresse, compteur, compteur_precedent,
+                            "frame(s) lost" if saut > 1 else "unexpected order",
+                        )
+                if compteur >= 0:
+                    compteur_precedent = compteur
 
-                base = index_os + rang * _ENTREES_PAR_NOTIF
+                base = index_os + n * _ENTREES_PAR_NOTIF
                 resultats.extend(
                     {**e, "idx": (base + k) % taille_buffer}
                     for k, e in enumerate(entries)
