@@ -251,6 +251,12 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._autonomie_date:     date | None = None  # figée tant qu'il n'y a pas de régénération
         self._regens_precedent:   int = 0              # pour détecter les régénérations
         
+        # Une seule session BLE à la fois. Les cycles de rafraîchissement et
+        # les appels de service partagent le même état de réception : deux
+        # sessions concurrentes mélangeraient leurs notifications (issues #9
+        # et #10) et produiraient des données fausses sans aucune erreur.
+        self._ble_lock = asyncio.Lock()
+
         # Debug (diagnostic entity)
         self._debug_broadcast_history: list[str] = []  # dernières 10 trames BROADCAST
 
@@ -338,6 +344,16 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         `ble_device` peut être fourni lorsqu'il a déjà été résolu (cycles de
         rafraîchissement) ; sinon il est recherché ici (appels de service).
         """
+        if self._ble_lock.locked():
+            _LOGGER.debug("BLE session busy — waiting for the current one to finish")
+
+        async with self._ble_lock:
+            async with self._ble_session_unlocked(ble_device) as session:
+                yield session
+
+    @asynccontextmanager
+    async def _ble_session_unlocked(self, ble_device=None):
+        """Corps de la session BLE — n'appeler que sous `_ble_lock`."""
         if ble_device is None:
             ble_device = self._resolve_ble_device()
 
@@ -736,10 +752,17 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 if compteur_precedent is not None and compteur >= 0:
                     saut = compteur - compteur_precedent
                     if saut != 1:
+                        # Un doublon signalait deux sessions BLE concurrentes
+                        # avant l'ajout du verrou : s'il réapparaît, le
+                        # problème est revenu.
+                        nature = (
+                            "duplicate frame" if saut == 0
+                            else "frame(s) lost" if saut > 1
+                            else "out of order"
+                        )
                         _LOGGER.debug(
                             "Frame counter @ %#x: %d after %d — %s",
-                            adresse, compteur, compteur_precedent,
-                            "frame(s) lost" if saut > 1 else "unexpected order",
+                            adresse, compteur, compteur_precedent, nature,
                         )
                 if compteur >= 0:
                     compteur_precedent = compteur

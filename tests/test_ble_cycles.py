@@ -538,3 +538,97 @@ class TestSessionBLE:
                 client, ADRESSE_TAB_QUART, 400, 27, is_quart=True
             )
         assert [e["idx"] for e in entries] == list(range(400, 427))
+
+
+# ── Sessions concurrentes (issues #9 et #10) ─────────────────────────────────
+
+class ConnexionPartagee(FakeBwtDevice):
+    """Deux clients sur une même connexion GATT, comme via un proxy ESPHome.
+
+    Chaque abonnement actif reçoit toutes les notifications ; `stop_notify` et
+    `disconnect` retirent l'abonnement, comme le fait Bleak.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.abonnes: list = []
+
+    async def start_notify(self, uuid, callback):
+        self.abonnes.append(callback)
+        self._callback = lambda s, d: [cb(s, d) for cb in list(self.abonnes)]
+
+    async def stop_notify(self, uuid):
+        self.abonnes.clear()
+
+    async def disconnect(self):
+        self.abonnes.clear()
+        self.disconnected = True
+
+    async def write_gatt_char(self, uuid, data):
+        await asyncio.sleep(0.005)      # laisse l'autre session s'intercaler
+        return await super().write_gatt_char(uuid, data)
+
+
+class TestSessionsConcurrentes:
+    """Une automatisation qui appelle un service pendant un cycle de rafraîchissement.
+
+    Sans verrou, les deux sessions s'abonnaient aux notifications de la même
+    connexion et empilaient leurs trames dans la même liste : chaque trame
+    arrivait deux fois, les résultats étaient faux, souvent sans erreur.
+    """
+
+    @pytest.fixture
+    def appareil(self):
+        return ConnexionPartagee(
+            make_broadcast(idx_jour=200), [0] * 2880,
+            [jour_word(150) for _ in range(1825)],
+        )
+
+    @pytest.mark.asyncio
+    async def test_deux_services_simultanes_donnent_le_bon_resultat(
+        self, coordinator, appareil, patched_ble
+    ):
+        with patched_ble(appareil), patch(
+            "custom_components.bwt_aqa_perla_ble.coordinator"
+            ".async_ble_device_from_address", return_value=object(),
+        ):
+            resultats = await asyncio.gather(
+                coordinator.service_total_consumption(),
+                coordinator.service_total_consumption(),
+            )
+        for r in resultats:
+            assert r["days_count"] == 200
+            assert r["total_liters"] == 200 * 150
+
+    @pytest.mark.asyncio
+    async def test_service_pendant_un_cycle_complet(
+        self, coordinator, appareil, patched_ble
+    ):
+        """Le cas réel : l'automatisation tombe pendant un cycle horaire."""
+        with patched_ble(appareil), patch(
+            "custom_components.bwt_aqa_perla_ble.coordinator"
+            ".async_ble_device_from_address", return_value=object(),
+        ):
+            _, total = await asyncio.gather(
+                coordinator._run_complet(object()),
+                coordinator.service_total_consumption(),
+            )
+        assert total["days_count"] == 200
+
+    @pytest.mark.asyncio
+    async def test_les_sessions_sont_serialisees(self, coordinator, fake_device, patched_ble):
+        """Aucune session ne démarre tant que la précédente n'est pas terminée."""
+        dev = fake_device()
+        actives, max_actives = 0, 0
+
+        with patched_ble(dev):
+            async def session():
+                nonlocal actives, max_actives
+                async with coordinator._ble_session(object()):
+                    actives += 1
+                    max_actives = max(max_actives, actives)
+                    await asyncio.sleep(0.01)
+                    actives -= 1
+
+            await asyncio.gather(session(), session(), session())
+        assert max_actives == 1
