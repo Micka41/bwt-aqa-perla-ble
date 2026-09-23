@@ -79,6 +79,12 @@ _LOGGER = logging.getLogger(__name__)
 # Une notification transporte au plus 9 mots de 16 bits
 _ENTREES_PAR_NOTIF = 9
 
+# Lecture de l'historique complet par les services : environ 21 blocs, donc
+# autant d'occasions de tomber sur une pause du proxy. Une lecture ratée est
+# relancée dans une nouvelle session plutôt que remontée à l'utilisateur.
+_TENTATIVES_HISTORIQUE = 3
+_DELAI_ENTRE_TENTATIVES = 2.0   # secondes
+
 _CYCLES_PAR_COMPLET = (INTERVALLE_COMPLET_H * 3600) // INTERVALLE_RAPIDE_S
 
 
@@ -835,7 +841,28 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     # ── Services HA ───────────────────────────────────────────────────
 
     async def _read_full_history(self) -> list[dict]:
-        """Lit tout l'historique journalier disponible (jusqu'à 1825 jours)."""
+        """Lit tout l'historique journalier, en relançant une lecture ratée.
+
+        Chaque tentative ouvre sa propre session BLE : l'appareil repart d'un
+        état propre, sans hypothèse sur la façon dont il réagirait à une
+        commande relancée en cours d'émission. Le code BWT d'origine, lui,
+        ferme la connexion en cas d'erreur de trame.
+        """
+        for tentative in range(1, _TENTATIVES_HISTORIQUE + 1):
+            try:
+                return await self._read_full_history_once()
+            except (UpdateFailed, BleakError) as err:
+                if tentative == _TENTATIVES_HISTORIQUE:
+                    raise
+                _LOGGER.warning(
+                    "History read failed (attempt %d/%d): %s — retrying",
+                    tentative, _TENTATIVES_HISTORIQUE, err,
+                )
+                await asyncio.sleep(_DELAI_ENTRE_TENTATIVES)
+        raise AssertionError("unreachable")
+
+    async def _read_full_history_once(self) -> list[dict]:
+        """Une tentative de lecture de l'historique journalier (jusqu'à 1825 jours)."""
         async with self._ble_session() as (client, bcast):
             idx_j     = bcast["index_tab_jour"]
             loop_jour = bcast["loop_jour"]

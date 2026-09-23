@@ -699,3 +699,107 @@ class TestTramesTardives:
                 await coordinator._lire_blocs(
                     dev, ADRESSE_TAB_QUART, 100, 300, is_quart=True
                 )
+
+
+# ── Relance de la lecture d'historique ───────────────────────────────────────
+
+class ProxyInstable(FakeBwtDevice):
+    """Perd la dernière trame du premier bloc lors des `echecs` premières sessions."""
+
+    def __init__(self, *args, echecs=1, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.echecs, self.sessions = echecs, 0
+
+    async def start_notify(self, uuid, callback):
+        self.sessions += 1
+        self._bloc_de_session = 0
+        await super().start_notify(uuid, callback)
+
+    async def write_gatt_char(self, uuid, data):
+        if data[0] == 0x03:
+            self.break_sent = True
+            return
+        if self.sessions <= self.echecs and self._bloc_de_session == 0:
+            self._bloc_de_session += 1
+            from custom_components.bwt_aqa_perla_ble.const import ADRESSE_TAB_JOUR
+            adresse = data[1] | (data[2] << 8)
+            nb_oct = data[3] | (data[4] << 8)
+            index = (adresse - ADRESSE_TAB_JOUR) // 2
+            mots = self.jours[index:index + nb_oct // 2]
+            trames = [make_notification(mots[i:i + 9], n)
+                      for n, i in enumerate(range(0, len(mots), 9))]
+            for t in trames[:-1]:           # la dernière trame se perd
+                self._callback(None, bytearray(t))
+            return
+        self._bloc_de_session += 1
+        return await super().write_gatt_char(uuid, data)
+
+
+@pytest.fixture
+def sans_delai_de_relance():
+    with patch(
+        "custom_components.bwt_aqa_perla_ble.coordinator._DELAI_ENTRE_TENTATIVES", 0
+    ):
+        yield
+
+
+class TestRelanceHistorique:
+
+    @pytest.mark.asyncio
+    async def test_lecture_ratee_puis_reussie(
+        self, coordinator, patched_ble, sans_delai_de_relance
+    ):
+        """Un bloc incomplet à la première session ne fait pas échouer le service."""
+        dev = ProxyInstable(make_broadcast(idx_jour=200), [0] * 2880,
+                            [jour_word(150) for _ in range(1825)], echecs=1)
+        with patched_ble(dev), patch(
+            "custom_components.bwt_aqa_perla_ble.coordinator"
+            ".async_ble_device_from_address", return_value=object(),
+        ):
+            result = await coordinator.service_total_consumption()
+        assert result["days_count"] == 200
+        assert result["total_liters"] == 200 * 150
+        assert dev.sessions == 2, "une seconde session aurait dû être ouverte"
+
+    @pytest.mark.asyncio
+    async def test_echec_persistant_apres_toutes_les_tentatives(
+        self, coordinator, patched_ble, sans_delai_de_relance
+    ):
+        """Si chaque session échoue, le service remonte l'erreur."""
+        from custom_components.bwt_aqa_perla_ble.coordinator import (
+            _TENTATIVES_HISTORIQUE,
+        )
+        from homeassistant.helpers.update_coordinator import UpdateFailed
+
+        dev = ProxyInstable(make_broadcast(idx_jour=200), [0] * 2880,
+                            [jour_word(150) for _ in range(1825)], echecs=99)
+        with patched_ble(dev), patch(
+            "custom_components.bwt_aqa_perla_ble.coordinator"
+            ".async_ble_device_from_address", return_value=object(),
+        ):
+            with pytest.raises(UpdateFailed, match="Incomplete block"):
+                await coordinator.service_total_consumption()
+        assert dev.sessions == _TENTATIVES_HISTORIQUE
+
+    @pytest.mark.asyncio
+    async def test_chaque_tentative_se_deconnecte(
+        self, coordinator, patched_ble, sans_delai_de_relance
+    ):
+        """Une tentative ratée ferme sa session avant que la suivante n'ouvre."""
+        dev = ProxyInstable(make_broadcast(idx_jour=200), [0] * 2880,
+                            [jour_word(150) for _ in range(1825)], echecs=1)
+        deconnexions = 0
+        original = dev.disconnect
+
+        async def compter():
+            nonlocal deconnexions
+            deconnexions += 1
+            await original()
+        dev.disconnect = compter
+
+        with patched_ble(dev), patch(
+            "custom_components.bwt_aqa_perla_ble.coordinator"
+            ".async_ble_device_from_address", return_value=object(),
+        ):
+            await coordinator.service_total_consumption()
+        assert deconnexions == dev.sessions == 2
