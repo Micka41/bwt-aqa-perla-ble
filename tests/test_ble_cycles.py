@@ -746,20 +746,31 @@ def sans_delai_de_relance():
 class TestRelanceHistorique:
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("service", [
+        "service_total_consumption",
+        "service_history_consumption",
+        "service_history_regenerations",
+    ])
     async def test_lecture_ratee_puis_reussie(
-        self, coordinator, patched_ble, sans_delai_de_relance
+        self, coordinator, patched_ble, sans_delai_de_relance, service
     ):
-        """Un bloc incomplet à la première session ne fait pas échouer le service."""
+        """Un bloc incomplet à la première session ne fait échouer aucun service.
+
+        Les trois services lisent l'historique par le même chemin : la relance
+        doit les couvrir tous, et continuer à le faire si l'un d'eux évolue.
+        """
         dev = ProxyInstable(make_broadcast(idx_jour=200), [0] * 2880,
                             [jour_word(150) for _ in range(1825)], echecs=1)
         with patched_ble(dev), patch(
             "custom_components.bwt_aqa_perla_ble.coordinator"
             ".async_ble_device_from_address", return_value=object(),
         ):
-            result = await coordinator.service_total_consumption()
-        assert result["days_count"] == 200
-        assert result["total_liters"] == 200 * 150
+            result = await getattr(coordinator, service)()
+        assert result, f"{service} n'a rien renvoyé"
         assert dev.sessions == 2, "une seconde session aurait dû être ouverte"
+        if service == "service_total_consumption":
+            assert result["days_count"] == 200
+            assert result["total_liters"] == 200 * 150
 
     @pytest.mark.asyncio
     async def test_echec_persistant_apres_toutes_les_tentatives(
