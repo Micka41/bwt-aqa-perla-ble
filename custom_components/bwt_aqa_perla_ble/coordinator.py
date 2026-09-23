@@ -721,52 +721,32 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             await client.write_gatt_char(UUID_WRITE, _build_read_cmd(adresse, nb_oct))
             await self._attendre_notifications(nb_tr)
 
-            if not self._notifications:
-                # Retourner une liste tronquée fausserait la datation des
-                # entrées (l'ancrage suppose que la dernière lue est la plus
-                # récente) et donc la consommation du jour.
+            trames = self._trames_du_bloc(nb_tr)
+            ecartees = len(self._notifications) - len(trames)
+
+            if len(trames) < nb_tr:
+                # Un bloc incomplet ne peut pas être daté : ses entrées seraient
+                # décalées. Mieux vaut échouer et réessayer au cycle suivant
+                # que produire des valeurs fausses.
                 raise UpdateFailed(
-                    f"No notification received @ {adresse:#x} "
-                    f"({bloc} entries expected, {len(resultats)} read so far)"
+                    f"Incomplete block @ {adresse:#x}: {len(trames)}/{nb_tr} frames "
+                    f"({ecartees} out-of-sequence discarded, "
+                    f"{len(resultats)} entries read so far)"
+                )
+            if ecartees:
+                _LOGGER.debug(
+                    "Block @ %#x: %d out-of-sequence frame(s) discarded "
+                    "(late frame from the previous block, or duplicate)",
+                    adresse, ecartees,
                 )
 
-            # Chaque entrée porte son index absolu dans le buffer circulaire.
-            # Dater d'après la position dans la liste serait fragile : une
-            # sentinelle 0xFFFF interrompt le décodage d'une notification, et
-            # toutes les dates se décaleraient alors d'un cran.
-            # Les entrées sont situées par leur ordre d'arrivée : la n-ième
-            # trame d'un bloc porte les entrées index_os + n*9 et suivantes.
-            #
-            # Les deux premiers octets de chaque trame contiennent un compteur
-            # qui s'incrémente d'une trame à l'autre, mais son origine n'est
-            # pas celle du bloc : selon le firmware et les trames déjà émises,
-            # la première trame d'un bloc peut annoncer 0, 6 ou davantage. Il
-            # ne peut donc pas servir à placer les entrées — seulement à
-            # repérer un trou dans la série.
+            # Chaque entrée porte son index absolu dans le buffer circulaire :
+            # la n-ième trame du bloc contient les entrées index_os + n*9 et
+            # suivantes. La datation s'appuie sur cet index, et non sur la
+            # position dans la liste finale.
             attendues = 0
-            compteur_precedent: int | None = None
-
-            for n, notif in enumerate(self._notifications):
-                compteur, entries = _decode_notification(notif, is_quart)
-
-                if compteur_precedent is not None and compteur >= 0:
-                    saut = compteur - compteur_precedent
-                    if saut != 1:
-                        # Un doublon signalait deux sessions BLE concurrentes
-                        # avant l'ajout du verrou : s'il réapparaît, le
-                        # problème est revenu.
-                        nature = (
-                            "duplicate frame" if saut == 0
-                            else "frame(s) lost" if saut > 1
-                            else "out of order"
-                        )
-                        _LOGGER.debug(
-                            "Frame counter @ %#x: %d after %d — %s",
-                            adresse, compteur, compteur_precedent, nature,
-                        )
-                if compteur >= 0:
-                    compteur_precedent = compteur
-
+            for n, notif in enumerate(trames):
+                _, entries = _decode_notification(notif, is_quart)
                 base = index_os + n * _ENTREES_PAR_NOTIF
                 resultats.extend(
                     {**e, "idx": (base + k) % taille_buffer}
@@ -775,6 +755,8 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 attendues += len(entries)
 
             if attendues < bloc:
+                # Le bloc est complet : des entrées manquantes ne peuvent venir
+                # que de cases non encore écrites (sentinelle 0xFFFF).
                 _LOGGER.debug(
                     "Block @ %#x: %d/%d entries decoded (unwritten buffer slots)",
                     adresse, attendues, bloc,
@@ -796,30 +778,59 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._notifications.append(bytes(payload))
         self._notify_event.set()
 
+    def _trames_du_bloc(self, nb_trames: int) -> list[bytearray]:
+        """Trames du bloc courant, dans l'ordre : compteurs 0, 1, 2…
+
+        Les deux premiers octets de chaque trame portent son rang dans le bloc,
+        remis à zéro à chaque commande READ — c'est la règle qu'applique
+        l'application BWT (`Index == LastGoodIndex + 1`).
+
+        Une trame qui ne prolonge pas cette séquence est écartée. C'est le cas
+        d'une trame du bloc précédent arrivée en retard : via un proxy ESPHome,
+        elle peut atteindre Home Assistant après l'envoi de la commande
+        suivante (issues #9 et #10).
+        """
+        valides: list[bytearray] = []
+        for notif in self._notifications:
+            if len(notif) >= 2 and _get_word_from(notif, 0, True) == len(valides):
+                valides.append(notif)
+                if len(valides) == nb_trames:
+                    break
+        return valides
+
     async def _attendre_notifications(
         self, nb_attendues: int, timeout: float = BLE_NOTIFY_TIMEOUT
     ) -> None:
-        """Attend les trames avec détection de silence = fin de bloc."""
+        """Attend les nb_attendues trames du bloc courant.
+
+        On ne passe pas au bloc suivant tant que celui-ci est incomplet : sa
+        dernière trame arriverait sinon pendant la lecture suivante, en
+        déclenchant une cascade qui décale chaque bloc d'une trame.
+
+        L'attente s'interrompt si aucune trame utile n'arrive pendant
+        BLE_NOTIFY_SILENCE secondes, ou au bout du délai total.
+        """
         loop     = asyncio.get_event_loop()
         deadline = loop.time() + timeout
 
         while True:
-            restant  = deadline - loop.time()
-            if restant <= 0:
-                break
-            nb_avant = len(self._notifications)
             self._notify_event.clear()
+            recues = len(self._trames_du_bloc(nb_attendues))
+            if recues >= nb_attendues:
+                return
+
+            restant = deadline - loop.time()
+            if restant <= 0:
+                return
             try:
                 await asyncio.wait_for(
                     self._notify_event.wait(),
                     timeout=min(BLE_NOTIFY_SILENCE, restant),
                 )
-                if len(self._notifications) >= nb_attendues:
-                    break
             except asyncio.TimeoutError:
-                if len(self._notifications) > nb_avant:
-                    continue   # encore actif
-                break          # silence prolongé = bloc terminé
+                # Plus rien depuis BLE_NOTIFY_SILENCE : trame perdue
+                if len(self._trames_du_bloc(nb_attendues)) == recues:
+                    return
 
     # ── Services HA ───────────────────────────────────────────────────
 
@@ -872,7 +883,10 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Service get_history_consumption — consommation par année/mois/jour."""
         jours = await self._read_full_history()
         result: dict = {}
-        for j in jours:
+        # L'ordre de lecture est déjà chronologique, wrap du buffer compris.
+        # Le tri le garantit explicitement plutôt que de le faire dépendre de
+        # l'ordre des blocs demandés.
+        for j in sorted(jours, key=lambda e: e["date"]):
             annee, mois, jour = j["date"].split("-")
             result.setdefault(annee, {}).setdefault(mois, {})[jour] = j["litres"]
         return result
@@ -881,7 +895,10 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Service get_history_regenerations — régénérations par année/mois/jour."""
         jours = await self._read_full_history()
         result: dict = {}
-        for j in jours:
+        # L'ordre de lecture est déjà chronologique, wrap du buffer compris.
+        # Le tri le garantit explicitement plutôt que de le faire dépendre de
+        # l'ordre des blocs demandés.
+        for j in sorted(jours, key=lambda e: e["date"]):
             annee, mois, jour = j["date"].split("-")
             result.setdefault(annee, {}).setdefault(mois, {})[jour] = j["rege"]
         return result

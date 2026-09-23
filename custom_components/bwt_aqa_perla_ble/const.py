@@ -39,7 +39,9 @@ NB_QUARTS_RAPIDE   = 100    # ~25 heures, couvre largement la journée en cours
 
 # Timeouts BLE
 BLE_CONNECT_TIMEOUT  = 30.0   # secondes
-BLE_NOTIFY_SILENCE   = 1.5    # secondes de silence = fin de bloc
+BLE_NOTIFY_SILENCE   = 5.0    # secondes sans trame = trame perdue ;
+                               # un proxy ESPHome peut marquer des pauses
+                               # de plus d'une seconde en cours de bloc
 BLE_NOTIFY_TIMEOUT   = 15.0   # timeout total par bloc
 BLE_DISCONNECT_TIMEOUT = 5.0    # s — borne la fermeture ; voir issue #8
 

@@ -401,144 +401,6 @@ class TestSessionBLE:
             )
         assert [e["idx"] for e in entries] == list(range(100, 118))
 
-    @pytest.mark.asyncio
-    async def test_numero_de_sequence_inattendu_tolere(
-        self, coordinator, fake_device, patched_ble
-    ):
-        """Un numéro de séquence inattendu ne doit pas faire échouer la lecture.
-
-        Le firmware A22X V1.18 annonce des numéros qui ne repartent pas de zéro
-        à chaque bloc (issue #10). La datation s'appuyant sur l'ordre d'arrivée
-        des trames, ces numéros sont seulement journalisés.
-        """
-        from custom_components.bwt_aqa_perla_ble.const import ADRESSE_TAB_QUART
-        from conftest import make_notification
-
-        dev = fake_device()
-        original = dev.write_gatt_char
-
-        async def write_sequence_decalee(uuid, data):
-            if data[0] == 0x03:
-                return await original(uuid, data)
-            dev._callback(None, bytearray(
-                make_notification([quart_word(7)] * 9, 6)   # annonce 6, pas 0
-            ))
-        dev.write_gatt_char = write_sequence_decalee
-
-        with patched_ble(dev):
-            from custom_components.bwt_aqa_perla_ble.coordinator import establish_connection
-            client = await establish_connection(None, None, None)
-            await coordinator._start_notify(client)
-            entries = await coordinator._lire_blocs(
-                client, ADRESSE_TAB_QUART, 200, 9, is_quart=True
-            )
-        # Les index restent déduits de la position, donc corrects
-        assert [e["idx"] for e in entries] == list(range(200, 209))
-
-    @pytest.mark.asyncio
-    async def test_compteur_de_trame_seulement_journalise(
-        self, coordinator, fake_device, patched_ble
-    ):
-        """Le compteur des deux premiers octets ne sert pas à placer les entrées.
-
-        Il s'incrémente d'une trame à l'autre, mais son origine ne coïncide pas
-        avec le début du bloc : selon le firmware et les trames déjà émises, la
-        première peut annoncer 0, 6 ou davantage (issues #9 et #10). S'en servir
-        comme position produit des entrées placées au hasard.
-        """
-        from custom_components.bwt_aqa_perla_ble.const import ADRESSE_TAB_QUART
-        from conftest import make_notification
-
-        dev = fake_device()
-        original = dev.write_gatt_char
-
-        async def write_compteur_decale(uuid, data):
-            if data[0] == 0x03:
-                return await original(uuid, data)
-            for compteur in (6, 7):        # origine arbitraire
-                dev._callback(None, bytearray(
-                    make_notification([quart_word(5)] * 9, compteur)
-                ))
-        dev.write_gatt_char = write_compteur_decale
-
-        with patched_ble(dev):
-            from custom_components.bwt_aqa_perla_ble.coordinator import establish_connection
-            client = await establish_connection(None, None, None)
-            await coordinator._start_notify(client)
-            entries = await coordinator._lire_blocs(
-                client, ADRESSE_TAB_QUART, 300, 18, is_quart=True
-            )
-
-        # Les entrées suivent l'ordre d'arrivée, quel que soit le compteur
-        assert [e["idx"] for e in entries] == list(range(300, 318))
-
-    @pytest.mark.asyncio
-    async def test_rang_hors_du_bloc_demande(
-        self, coordinator, fake_device, patched_ble
-    ):
-        """Un rang supérieur à la taille du bloc n'est pas un rang plausible.
-
-        Ici le bloc ne compte que deux trames, mais la première annonce 6 :
-        le champ ne peut pas désigner une position dans ce bloc, donc l'ordre
-        d'arrivée reprend la main.
-        """
-        from custom_components.bwt_aqa_perla_ble.const import ADRESSE_TAB_QUART
-        from conftest import make_notification
-
-        dev = fake_device()
-        original = dev.write_gatt_char
-
-        async def write_depuis_six(uuid, data):
-            if data[0] == 0x03:
-                return await original(uuid, data)
-            for offset in (6, 7):
-                dev._callback(None, bytearray(
-                    make_notification([quart_word(5)] * 9, offset)
-                ))
-        dev.write_gatt_char = write_depuis_six
-
-        with patched_ble(dev):
-            from custom_components.bwt_aqa_perla_ble.coordinator import establish_connection
-            client = await establish_connection(None, None, None)
-            await coordinator._start_notify(client)
-            entries = await coordinator._lire_blocs(
-                client, ADRESSE_TAB_QUART, 300, 18, is_quart=True
-            )
-        assert [e["idx"] for e in entries] == list(range(300, 318))
-
-    @pytest.mark.asyncio
-    async def test_repli_si_le_champ_nest_pas_un_compteur(
-        self, coordinator, fake_device, patched_ble
-    ):
-        """Un champ au comportement imprévisible ne doit pas corrompre la datation.
-
-        Si les numéros reculent ou dépassent le bloc demandé, ce n'est pas un
-        compteur de séquence : l'ordre d'arrivée reprend la main.
-        """
-        from custom_components.bwt_aqa_perla_ble.const import ADRESSE_TAB_QUART
-        from conftest import make_notification
-
-        dev = fake_device()
-        original = dev.write_gatt_char
-
-        async def write_incoherent(uuid, data):
-            if data[0] == 0x03:
-                return await original(uuid, data)
-            for valeur in (500, 12, 999):      # ni monotone, ni borné
-                dev._callback(None, bytearray(
-                    make_notification([quart_word(2)] * 9, valeur)
-                ))
-        dev.write_gatt_char = write_incoherent
-
-        with patched_ble(dev):
-            from custom_components.bwt_aqa_perla_ble.coordinator import establish_connection
-            client = await establish_connection(None, None, None)
-            await coordinator._start_notify(client)
-            entries = await coordinator._lire_blocs(
-                client, ADRESSE_TAB_QUART, 400, 27, is_quart=True
-            )
-        assert [e["idx"] for e in entries] == list(range(400, 427))
-
 
 # ── Sessions concurrentes (issues #9 et #10) ─────────────────────────────────
 
@@ -632,3 +494,208 @@ class TestSessionsConcurrentes:
 
             await asyncio.gather(session(), session(), session())
         assert max_actives == 1
+
+    @pytest.mark.asyncio
+    async def test_historique_trie_par_date(self, coordinator, fake_device, patched_ble):
+        """Le résultat sort dans l'ordre chronologique, buffer bouclé compris.
+
+        L'ordre de lecture l'est déjà, mais il dépend du découpage en blocs et
+        du point de wrap : le tri rend la garantie explicite.
+        """
+        from custom_components.bwt_aqa_perla_ble.const import MAX_TAB_JOUR
+
+        dev = fake_device(
+            broadcast=make_broadcast(idx_jour=300, loop_jour=True),
+            jours=[jour_word(100 + (k % 50) * 10) for k in range(MAX_TAB_JOUR)],
+        )
+        with patched_ble(dev):
+            result = await coordinator.service_history_consumption()
+
+        dates = [
+            f"{annee}-{mois}-{jour}"
+            for annee, mois_dict in result.items()
+            for mois, jours_dict in mois_dict.items()
+            for jour in jours_dict
+        ]
+        assert dates == sorted(dates), "les dates ne sortent pas dans l'ordre"
+
+
+
+# ── Trames tardives et cascade (issues #9 et #10) ────────────────────────────
+
+class ProxyAvecLatence(FakeBwtDevice):
+    """Relaie les trames en arrière-plan, comme un proxy ESPHome.
+
+    Chaque commande READ met `latence` secondes à atteindre l'appareil ; la
+    dernière trame du premier bloc peut subir une `pause` supplémentaire.
+    Avec pause > silence toléré mais < silence + latence, cette trame arrive
+    après l'envoi de la commande suivante et avant ses propres trames : c'est
+    la configuration observée dans les journaux de l'issue #10.
+    """
+
+    def __init__(self, *args, latence=0.02, pause=0.0, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.latence, self.pause, self.num_bloc = latence, pause, 0
+
+    async def write_gatt_char(self, uuid, data):
+        if data[0] == 0x03:
+            self.break_sent = True
+            return
+        from custom_components.bwt_aqa_perla_ble.const import (
+            ADRESSE_TAB_JOUR, ADRESSE_TAB_QUART,
+        )
+        adresse = data[1] | (data[2] << 8)
+        nb_oct = data[3] | (data[4] << 8)
+        self.reads.append((adresse, nb_oct))
+        if adresse >= ADRESSE_TAB_JOUR:
+            source, base = self.jours, ADRESSE_TAB_JOUR
+        else:
+            source, base = self.quarts, ADRESSE_TAB_QUART
+        index = (adresse - base) // 2
+        mots = source[index:index + nb_oct // 2]
+        trames = [make_notification(mots[i:i + 9], n)
+                  for n, i in enumerate(range(0, len(mots), 9))]
+        premier = self.num_bloc == 0
+        self.num_bloc += 1
+
+        async def envoyer():
+            await asyncio.sleep(self.latence)
+            for n, t in enumerate(trames):
+                if premier and n == len(trames) - 1 and self.pause:
+                    await asyncio.sleep(self.pause)
+                await asyncio.sleep(0.001)
+                if self._callback:
+                    self._callback(None, bytearray(t))
+        asyncio.get_event_loop().create_task(envoyer())
+
+
+def _valeurs_indexees(taille):
+    """Chaque case vaut son propre index : un mauvais placement saute aux yeux."""
+    return [quart_word(k % 1000) for k in range(taille)]
+
+
+class TestTramesTardives:
+
+    @pytest.mark.asyncio
+    async def test_trame_tardive_en_tete_de_bloc_ecartee(
+        self, coordinator, fake_device, patched_ble
+    ):
+        """Le motif exact des journaux : « 0 after 9 » en tête de bloc.
+
+        La dernière trame du bloc précédent (rang 9) arrive avant la première
+        du bloc courant. Elle ne prolonge pas la séquence 0, 1, 2… et doit être
+        écartée ; les entrées du bloc restent à leur place.
+        """
+        from custom_components.bwt_aqa_perla_ble.const import ADRESSE_TAB_QUART
+        dev = fake_device(quarts=_valeurs_indexees(2880))
+        original = dev.write_gatt_char
+
+        async def avec_tardive(uuid, data):
+            if data[0] != 0x03:
+                dev._callback(None, bytearray(
+                    make_notification([quart_word(999)] * 9, 9)
+                ))
+            return await original(uuid, data)
+        dev.write_gatt_char = avec_tardive
+
+        with patched_ble(dev):
+            client = dev
+            await coordinator._start_notify(client)
+            entries = await coordinator._lire_blocs(
+                client, ADRESSE_TAB_QUART, 100, 90, is_quart=True
+            )
+        assert [e["idx"] for e in entries] == list(range(100, 190))
+        assert all(e["litres"] == e["idx"] for e in entries), (
+            "une trame tardive a été prise pour une trame du bloc"
+        )
+
+    @pytest.mark.asyncio
+    async def test_doublon_ecarte(self, coordinator, fake_device, patched_ble):
+        """Une trame reçue deux fois ne décale pas les suivantes."""
+        from custom_components.bwt_aqa_perla_ble.const import ADRESSE_TAB_QUART
+        dev = fake_device(quarts=_valeurs_indexees(2880))
+
+        async def en_double(uuid, data):
+            if data[0] == 0x03:
+                return
+            mots = dev.quarts[100:118]
+            t0 = make_notification(mots[0:9], 0)
+            t1 = make_notification(mots[9:18], 1)
+            for t in (t0, t0, t1):
+                dev._callback(None, bytearray(t))
+        dev.write_gatt_char = en_double
+
+        with patched_ble(dev):
+            await coordinator._start_notify(dev)
+            entries = await coordinator._lire_blocs(
+                dev, ADRESSE_TAB_QUART, 100, 18, is_quart=True
+            )
+        assert all(e["litres"] == e["idx"] for e in entries)
+        assert len(entries) == 18
+
+    @pytest.mark.asyncio
+    async def test_bloc_incomplet_echoue(self, coordinator, fake_device, patched_ble):
+        """Un bloc auquel il manque une trame ne produit pas de données.
+
+        Ses entrées seraient mal placées : mieux vaut échouer et réessayer au
+        cycle suivant que remonter des valeurs fausses sans erreur.
+        """
+        from custom_components.bwt_aqa_perla_ble.const import ADRESSE_TAB_QUART
+        from homeassistant.helpers.update_coordinator import UpdateFailed
+        dev = fake_device()
+
+        async def sans_la_derniere(uuid, data):
+            if data[0] == 0x03:
+                return
+            for n in range(9):          # 9 trames sur les 10 attendues
+                dev._callback(None, bytearray(
+                    make_notification([quart_word(1)] * 9, n)
+                ))
+        dev.write_gatt_char = sans_la_derniere
+
+        with patched_ble(dev):
+            await coordinator._start_notify(dev)
+            with pytest.raises(UpdateFailed, match="Incomplete block"):
+                await coordinator._lire_blocs(
+                    dev, ADRESSE_TAB_QUART, 0, 90, is_quart=True
+                )
+
+    @pytest.mark.asyncio
+    async def test_pause_du_proxy_toleree_sans_cascade(self, coordinator, patched_ble):
+        """Une pause du proxy, plus courte que le silence toléré, ne corrompt rien.
+
+        Avant le correctif, cette seule pause déclenchait une cascade : chaque
+        bloc héritait de la dernière trame du précédent, et 216 entrées sur 300
+        finissaient mal placées, sans aucune erreur.
+        """
+        from custom_components.bwt_aqa_perla_ble.const import ADRESSE_TAB_QUART
+        dev = ProxyAvecLatence(make_broadcast(), _valeurs_indexees(2880), [0] * 1825,
+                               latence=0.005, pause=0.03)
+        with patched_ble(dev), patch(
+            "custom_components.bwt_aqa_perla_ble.coordinator.BLE_NOTIFY_SILENCE", 0.1
+        ):
+            await coordinator._start_notify(dev)
+            entries = await coordinator._lire_blocs(
+                dev, ADRESSE_TAB_QUART, 100, 300, is_quart=True
+            )
+        assert len(entries) == 300
+        mal_placees = [e for e in entries if e["litres"] != e["idx"] % 1000]
+        assert not mal_placees, f"{len(mal_placees)} entrées mal placées"
+
+    @pytest.mark.asyncio
+    async def test_pause_excessive_echoue_sans_corrompre(
+        self, coordinator, patched_ble
+    ):
+        """Au-delà du silence toléré, la lecture échoue au lieu de se décaler."""
+        from custom_components.bwt_aqa_perla_ble.const import ADRESSE_TAB_QUART
+        from homeassistant.helpers.update_coordinator import UpdateFailed
+        dev = ProxyAvecLatence(make_broadcast(), _valeurs_indexees(2880), [0] * 1825,
+                               latence=0.005, pause=0.06)
+        with patched_ble(dev), patch(
+            "custom_components.bwt_aqa_perla_ble.coordinator.BLE_NOTIFY_SILENCE", 0.03
+        ):
+            await coordinator._start_notify(dev)
+            with pytest.raises(UpdateFailed, match="Incomplete block"):
+                await coordinator._lire_blocs(
+                    dev, ADRESSE_TAB_QUART, 100, 300, is_quart=True
+                )
