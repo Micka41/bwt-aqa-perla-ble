@@ -22,9 +22,11 @@ from .const import (
     DOMAIN,
     KEY_AVG_DAILY_30D,
     KEY_CONSUMPTION_TODAY,
+    KEY_WATER_METER,
     KEY_CONSUMPTION_WEEK,
     KEY_CONSUMPTION_YESTERDAY,
     KEY_DEBUG_BROADCAST,
+    KEY_DAY_ROLLOVER,
     KEY_FIRMWARE,
     KEY_LAST_SYNC,
     KEY_REGEN_TODAY,
@@ -67,6 +69,16 @@ SENSORS: tuple[BwtSensorEntityDescription, ...] = (
         device_class=SensorDeviceClass.WEIGHT,
         icon="mdi:weight-kilogram",
         entity_registry_enabled_default=False,
+    ),
+    BwtSensorEntityDescription(
+        # Compteur cumulé, sans remise à zéro : la source à retenir pour le
+        # tableau de bord Eau de Home Assistant
+        key=KEY_WATER_METER,
+        translation_key="water_meter",
+        native_unit_of_measurement=UnitOfVolume.LITERS,
+        device_class=SensorDeviceClass.WATER,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        icon="mdi:counter",
     ),
     BwtSensorEntityDescription(
         key=KEY_CONSUMPTION_TODAY,
@@ -142,6 +154,12 @@ SENSORS: tuple[BwtSensorEntityDescription, ...] = (
         entity_registry_enabled_default=False,
     ),
     BwtSensorEntityDescription(
+        key=KEY_DAY_ROLLOVER,
+        translation_key="day_rollover",
+        icon="mdi:calendar-clock",
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    BwtSensorEntityDescription(
         key=KEY_DEBUG_BROADCAST,
         translation_key="debug_broadcast",
         icon="mdi:code-brackets",
@@ -186,13 +204,17 @@ class BwtSensor(CoordinatorEntity[BwtCoordinator], SensorEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
-        # L'état est limité à 255 caractères et ne porte que la dernière
-        # trame : l'historique complet est exposé ici.
-        if (
-            self.entity_description.key == KEY_DEBUG_BROADCAST
-            and self.coordinator.data is not None
-        ):
+        if self.coordinator.data is None:
+            return None
+        key = self.entity_description.key
+        if key == KEY_DEBUG_BROADCAST:
+            # L'état est limité à 255 caractères et ne porte que la dernière
+            # trame : l'historique complet est exposé ici.
             return {"frames": self.coordinator.data.get("debug_broadcast_frames", [])}
+        if key == KEY_DAY_ROLLOVER:
+            # Nombre de bascules observées sur lesquelles repose l'heure
+            # affichée (médiane des 7 dernières)
+            return {"observations": self.coordinator.data.get("day_rollover_observations", 0)}
         return None
 
 

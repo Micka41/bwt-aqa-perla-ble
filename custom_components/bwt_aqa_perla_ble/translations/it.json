@@ -60,12 +60,18 @@
       "salt_autonomy_date": {
         "name": "Data fine autonomia sale"
       },
+      "day_rollover": {
+        "name": "Ora di cambio giornaliero"
+      },
       "debug_broadcast": {
         "name": "Frame BROADCAST (debug)"
       },
       "water_cutoff_today": {
         "name": "Interruzioni idriche oggi",
         "unit_of_measurement": "interruzioni"
+      },
+      "water_meter": {
+        "name": "Contatore acqua"
       }
     },
     "binary_sensor": {

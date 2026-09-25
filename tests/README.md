@@ -33,6 +33,7 @@ Durée : moins d'une seconde. Les timeouts BLE sont raccourcis par la fixture
 | `test_protocol.py` | Décodage BROADCAST et notifications, commandes, issue #4 |
 | `test_logic.py` | Autonomie, consolidation hier/semaine, historique debug, résultat |
 | `test_ble_cycles.py` | Cycles rapide/complet, buffers circulaires, services, échecs |
+| `test_datation.py` | Apprentissage de l'heure de bascule, datation des cases journalières, fusion avec les quarts |
 | `test_package.py` | Manifest, traductions, cohérence des clés et des services |
 
 ## Outillage
@@ -70,6 +71,10 @@ Chaque correctif a son test d'acceptation ; une régression les fait échouer.
 | `TestPersistance` (6 tests) | La date de fin d'autonomie survit à un redémarrage sans glisser |
 | `test_pas_dimport_local_redondant` | Pas d'import local masquant le module importé en tête de fichier |
 | `TestSessionBLE` (6 tests) | Le context manager déconnecte toujours, même si le bloc lève |
+| `test_issue_10_rejouee_de_bout_en_bout` | Deux lectures encadrant la bascule de l'adoucisseur gardent chaque valeur à sa date |
+| `TestServices` | Les 29 derniers jours viennent des quarts, au litre près, sans double comptage au raccord |
+| `TestHierSemaine` | Hier et 7 jours découpés à minuit, indépendants de l'heure de bascule |
+| `test_suppression_de_l_integration_efface_l_etat` | Réinstaller repart de zéro |
 | `test_toutes_les_cles_const_sont_utilisees` | Aucune constante orpheline |
 
 ## Régressions couvertes

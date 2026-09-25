@@ -60,12 +60,18 @@
       "salt_autonomy_date": {
         "name": "Salzautonomie Enddatum"
       },
+      "day_rollover": {
+        "name": "Tageswechselzeit"
+      },
       "debug_broadcast": {
         "name": "BROADCAST-Frames (Debug)"
       },
       "water_cutoff_today": {
         "name": "Wasserunterbrechungen heute",
         "unit_of_measurement": "Unterbrechungen"
+      },
+      "water_meter": {
+        "name": "Wasserzähler"
       }
     },
     "binary_sensor": {

@@ -60,12 +60,18 @@
       "salt_autonomy_date": {
         "name": "Salt autonomy end date"
       },
+      "day_rollover": {
+        "name": "Daily rollover time"
+      },
       "debug_broadcast": {
         "name": "BROADCAST frames (debug)"
       },
       "water_cutoff_today": {
         "name": "Water cutoffs today",
         "unit_of_measurement": "cutoffs"
+      },
+      "water_meter": {
+        "name": "Water meter"
       }
     },
     "binary_sensor": {

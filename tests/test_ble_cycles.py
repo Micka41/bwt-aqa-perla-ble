@@ -105,6 +105,12 @@ def patched_ble(fake_device):
     return _run
 
 
+
+def coordinator_aujourd_hui() -> str:
+    from homeassistant.util import dt as dt_util
+    return dt_util.now().date().isoformat()
+
+
 # ── Cycle rapide ─────────────────────────────────────────────────────────────
 
 class TestCycleRapide:
@@ -154,7 +160,9 @@ class TestCycleComplet:
     async def test_wrap_buffer_quart(self, coordinator, fake_device, patched_ble):
         """idx < nb : la lecture doit se faire en deux parties, sans doublon."""
         from custom_components.bwt_aqa_perla_ble.const import ADRESSE_TAB_QUART, MAX_TAB_QUART, NB_QUARTS_COMPLET
-        dev = fake_device(broadcast=make_broadcast(idx_quart=20, idx_jour=100))
+        dev = fake_device(broadcast=make_broadcast(idx_quart=20, idx_jour=100, loop_quart=True))
+        # Hier et 7 jours déjà calculés aujourd'hui : lecture courte de 120 quarts
+        coordinator._jour_hier_semaine = coordinator_aujourd_hui()
         with patched_ble(dev):
             await coordinator._run_complet(object())
 
@@ -167,9 +175,30 @@ class TestCycleComplet:
         assert any(i >= MAX_TAB_QUART - 100 for i, _ in lectures_quart), "fin de buffer non lue"
 
     @pytest.mark.asyncio
+    async def test_lecture_etendue_une_fois_par_jour(
+        self, coordinator, fake_device, patched_ble, clock
+    ):
+        """Le premier cycle du jour remonte à J-7 ; les suivants lisent 120 quarts."""
+        from custom_components.bwt_aqa_perla_ble.const import ADRESSE_TAB_QUART, MAX_TAB_QUART
+        clock.set(hour=12, minute=0)
+
+        def quarts_lus(dev):
+            return sum(n // 2 for a, n in dev.reads if a < ADRESSE_TAB_QUART + MAX_TAB_QUART * 2)
+
+        dev = fake_device(broadcast=make_broadcast(idx_quart=2000, idx_jour=100))
+        with patched_ble(dev):
+            await coordinator._run_complet(object())
+        assert quarts_lus(dev) == 7 * 96 + 48 + 1       # de J-7 à midi
+
+        dev = fake_device(broadcast=make_broadcast(idx_quart=2004, idx_jour=100))
+        with patched_ble(dev):
+            await coordinator._run_complet(object())
+        assert quarts_lus(dev) == 120
+
+    @pytest.mark.asyncio
     async def test_wrap_a_index_zero(self, coordinator, fake_device, patched_ble):
         """Cas limite idx == 0 : tout doit être lu en fin de buffer."""
-        dev = fake_device(broadcast=make_broadcast(idx_quart=0, idx_jour=0))
+        dev = fake_device(broadcast=make_broadcast(idx_quart=0, idx_jour=0, loop_quart=True))
         with patched_ble(dev):
             await coordinator._run_complet(object())
         assert dev.reads, "aucune lecture effectuée"
@@ -239,23 +268,94 @@ class TestEchecsLecture:
 # ── Services d'historique ────────────────────────────────────────────────────
 
 class TestServices:
+    """Services d'historique : quarts d'heure récents, cases journalières au-delà.
+
+    L'horloge des tests est fixée au 28/04 à midi. Avec 240 quarts écrits, le
+    buffer des quarts couvre exactement le 26 et le 27 en entier, puis le 28
+    jusqu'à 11 h 45 — la journée en cours, exclue des services.
+    """
+
+    QUARTS_DEUX_JOURS = 240
+
+    @staticmethod
+    def _deux_jours_de_quarts(litres: int) -> list[int]:
+        return [quart_word(litres) for _ in range(2880)]
+
     @pytest.mark.asyncio
-    async def test_total_consumption(self, coordinator, fake_device, patched_ble):
-        dev = fake_device(broadcast=make_broadcast(idx_jour=100),
+    async def test_cases_seules(self, coordinator, fake_device, patched_ble):
+        """Sans quarts, l'historique vient entièrement des cases journalières."""
+        dev = fake_device(broadcast=make_broadcast(idx_jour=100, idx_quart=0),
                           jours=[jour_word(150) for _ in range(1825)])
         with patched_ble(dev):
             result = await coordinator.service_total_consumption()
         assert result["days_count"] == 100
         assert result["total_liters"] == 100 * 150
-        assert result["from_date"] < result["to_date"]
+        assert result["to_date"] == "2026-04-27"          # hier
 
     @pytest.mark.asyncio
     async def test_historique_vide(self, coordinator, fake_device, patched_ble):
-        dev = fake_device(broadcast=make_broadcast(idx_jour=0))
+        dev = fake_device(broadcast=make_broadcast(idx_jour=0, idx_quart=0))
         with patched_ble(dev):
             result = await coordinator.service_total_consumption()
         assert result["days_count"] == 0
         assert result["from_date"] is None
+
+    @pytest.mark.asyncio
+    async def test_jours_recents_depuis_les_quarts(self, coordinator, fake_device, patched_ble):
+        """Les jours couverts par les quarts remplacent les cases, au litre près."""
+        dev = fake_device(
+            broadcast=make_broadcast(idx_jour=100, idx_quart=self.QUARTS_DEUX_JOURS),
+            jours=[jour_word(150) for _ in range(1825)],
+            quarts=self._deux_jours_de_quarts(3),
+        )
+        with patched_ble(dev):
+            result = await coordinator.service_history_consumption()
+        avril = result["2026"]["04"]
+        assert avril["26"] == avril["27"] == 96 * 3        # 288 L : pas un multiple de 10
+        assert avril["25"] == 150                          # au-delà : case journalière
+        assert "28" not in avril                           # journée en cours exclue
+
+    @pytest.mark.asyncio
+    async def test_total_sans_double_comptage(self, coordinator, fake_device, patched_ble):
+        """Bascule à minuit : les cases du 26 et du 27 cèdent la place aux quarts."""
+        dev = fake_device(
+            broadcast=make_broadcast(idx_jour=100, idx_quart=self.QUARTS_DEUX_JOURS),
+            jours=[jour_word(150) for _ in range(1825)],
+            quarts=self._deux_jours_de_quarts(2),
+        )
+        with patched_ble(dev):
+            result = await coordinator.service_total_consumption()
+        assert result["days_count"] == 100
+        assert result["total_liters"] == 98 * 150 + 2 * 96 * 2
+
+    @pytest.mark.asyncio
+    async def test_raccord_avec_bascule_apprise(
+        self, coordinator, fake_device, patched_ble, clock
+    ):
+        """Bascule apprise à 9 h 30 : la case à cheval sur le 26 est tronquée.
+
+        La case 25/9 h 30 – 26/9 h 30 couvre les 9 h 30 du 26 que les quarts
+        comptent déjà : 38 quarts de 2 L en sont retirés, sous la date du 25.
+        """
+        from custom_components.bwt_aqa_perla_ble.const import MAX_TAB_JOUR
+
+        bascule = clock.now().replace(hour=9, minute=30)
+        coordinator._bascule.observer(99, bascule - timedelta(minutes=5), MAX_TAB_JOUR)
+        coordinator._bascule.observer(100, bascule + timedelta(minutes=5), MAX_TAB_JOUR)
+
+        dev = fake_device(
+            broadcast=make_broadcast(idx_jour=100, idx_quart=self.QUARTS_DEUX_JOURS),
+            jours=[jour_word(150) for _ in range(1825)],
+            quarts=self._deux_jours_de_quarts(2),
+        )
+        with patched_ble(dev):
+            historique = await coordinator.service_history_consumption()
+            total = await coordinator.service_total_consumption()
+
+        avril = historique["2026"]["04"]
+        assert avril["25"] == 150 - 38 * 2
+        assert avril["26"] == avril["27"] == 96 * 2
+        assert total["total_liters"] == 97 * 150 + (150 - 38 * 2) + 2 * 96 * 2
 
     @pytest.mark.asyncio
     async def test_historique_conso_structure(self, coordinator, fake_device, patched_ble):
@@ -270,20 +370,31 @@ class TestServices:
         assert isinstance(result[annee][mois][jour], int)
 
     @pytest.mark.asyncio
-    async def test_historique_regenerations(self, coordinator, fake_device, patched_ble):
+    async def test_regenerations_recentes_depuis_les_quarts(
+        self, coordinator, fake_device, patched_ble
+    ):
+        """Une régénération sur quatre quarts du 27 compte pour une, le 27."""
+        quarts = self._deux_jours_de_quarts(1)
+        fin = self.QUARTS_DEUX_JOURS               # index du quart de 11 h 45 le 28 + 1
+        debut_27 = fin - 1 - 47 - 96               # 27/04 à 0 h
+        for i in range(debut_27 + 12, debut_27 + 16):   # 3 h – 4 h
+            quarts[i] = quart_word(0, rege=True)
         jours = [jour_word(100, regens=1 if i % 5 == 0 else 0) for i in range(1825)]
-        dev = fake_device(broadcast=make_broadcast(idx_jour=40), jours=jours)
+        dev = fake_device(
+            broadcast=make_broadcast(idx_jour=100, idx_quart=self.QUARTS_DEUX_JOURS),
+            jours=jours, quarts=quarts,
+        )
         with patched_ble(dev):
             result = await coordinator.service_history_regenerations()
-        total = sum(v for a in result.values() for m in a.values() for v in m.values())
-        assert total > 0
+        avril = result["2026"]["04"]
+        assert avril["27"] == 1 and avril["26"] == 0
 
     @pytest.mark.asyncio
     async def test_buffer_plein_lu_en_deux_parties(self, coordinator, fake_device, patched_ble):
         """loop_jour actif : les 1825 jours doivent être lus, wrap inclus."""
         from custom_components.bwt_aqa_perla_ble.const import MAX_TAB_JOUR
         dev = fake_device(
-            broadcast=make_broadcast(idx_jour=300, loop_jour=True),
+            broadcast=make_broadcast(idx_jour=300, idx_quart=0, loop_jour=True),
             jours=[jour_word(100) for _ in range(MAX_TAB_JOUR)],
         )
         with patched_ble(dev):
@@ -442,7 +553,7 @@ class TestSessionsConcurrentes:
     @pytest.fixture
     def appareil(self):
         return ConnexionPartagee(
-            make_broadcast(idx_jour=200), [0] * 2880,
+            make_broadcast(idx_jour=200, idx_quart=0), [0] * 2880,
             [jour_word(150) for _ in range(1825)],
         )
 
@@ -759,7 +870,7 @@ class TestRelanceHistorique:
         Les trois services lisent l'historique par le même chemin : la relance
         doit les couvrir tous, et continuer à le faire si l'un d'eux évolue.
         """
-        dev = ProxyInstable(make_broadcast(idx_jour=200), [0] * 2880,
+        dev = ProxyInstable(make_broadcast(idx_jour=200, idx_quart=0), [0] * 2880,
                             [jour_word(150) for _ in range(1825)], echecs=1)
         with patched_ble(dev), patch(
             "custom_components.bwt_aqa_perla_ble.coordinator"
@@ -782,7 +893,7 @@ class TestRelanceHistorique:
         )
         from homeassistant.helpers.update_coordinator import UpdateFailed
 
-        dev = ProxyInstable(make_broadcast(idx_jour=200), [0] * 2880,
+        dev = ProxyInstable(make_broadcast(idx_jour=200, idx_quart=0), [0] * 2880,
                             [jour_word(150) for _ in range(1825)], echecs=99)
         with patched_ble(dev), patch(
             "custom_components.bwt_aqa_perla_ble.coordinator"
@@ -797,7 +908,7 @@ class TestRelanceHistorique:
         self, coordinator, patched_ble, sans_delai_de_relance
     ):
         """Une tentative ratée ferme sa session avant que la suivante n'ouvre."""
-        dev = ProxyInstable(make_broadcast(idx_jour=200), [0] * 2880,
+        dev = ProxyInstable(make_broadcast(idx_jour=200, idx_quart=0), [0] * 2880,
                             [jour_word(150) for _ in range(1825)], echecs=1)
         deconnexions = 0
         original = dev.disconnect
@@ -814,3 +925,353 @@ class TestRelanceHistorique:
         ):
             await coordinator.service_total_consumption()
         assert deconnexions == dev.sessions == 2
+
+
+# ── Apprentissage de la bascule, de bout en bout ─────────────────────────────
+
+class TestApprentissageBascule:
+
+    @pytest.mark.asyncio
+    async def test_appris_en_observant_l_index(self, coordinator, fake_device, patched_ble, clock):
+        """Deux cycles encadrant l'avance de l'index suffisent à dater la bascule."""
+        clock.set(hour=9, minute=20)
+        with patched_ble(fake_device(broadcast=make_broadcast(idx_jour=112))):
+            await coordinator._run_rapide(object())
+        assert coordinator._heure_bascule_texte() is None
+
+        clock.advance(minutes=15)
+        with patched_ble(fake_device(broadcast=make_broadcast(idx_jour=113))):
+            result = await coordinator._run_rapide(object())
+        assert coordinator._heure_bascule_texte() == "09:27"
+        assert result["day_rollover"] == "09:27"
+        assert result["day_rollover_observations"] == 1
+
+    @pytest.mark.asyncio
+    async def test_persiste_et_restaure(self, coordinator, fake_device, patched_ble, clock, store):
+        from unittest.mock import MagicMock
+        from custom_components.bwt_aqa_perla_ble.coordinator import BwtCoordinator
+        clock.set(hour=9, minute=20)
+        with patched_ble(fake_device(broadcast=make_broadcast(idx_jour=112))):
+            await coordinator._run_rapide(object())
+        clock.advance(minutes=15)
+        with patched_ble(fake_device(broadcast=make_broadcast(idx_jour=113))):
+            await coordinator._run_rapide(object())
+
+        neuf = BwtCoordinator(MagicMock(), "03:12:00:34:00:5E")
+        await neuf.async_load_stored_data()
+        assert neuf._heure_bascule_texte() == "09:27"
+        assert neuf._bascule.ancre[0] == 113
+
+    @pytest.mark.asyncio
+    async def test_nouvelle_installation_comportement_inchange(
+        self, coordinator, fake_device, patched_ble
+    ):
+        """Avant toute observation, la dernière case est « hier », comme avant."""
+        dev = fake_device(broadcast=make_broadcast(idx_jour=100, idx_quart=0),
+                          jours=[jour_word(150) for _ in range(1825)])
+        with patched_ble(dev):
+            result = await coordinator.service_total_consumption()
+        assert result["to_date"] == "2026-04-27"
+
+
+# ── Ordonnancement autour de minuit ──────────────────────────────────────────
+
+class TestOrdonnancementMinuit:
+    """Hier et 7 jours sont recalculés au premier cycle après 00 h 20."""
+
+    @staticmethod
+    async def _cycle(coordinator):
+        with patch.object(coordinator, "_resolve_ble_device", return_value=object()), \
+             patch.object(coordinator, "_run_complet", AsyncMock(return_value={})) as complet, \
+             patch.object(coordinator, "_run_rapide", AsyncMock(return_value={})):
+            await coordinator._async_update_data()
+        return "complet" if complet.called else "rapide"
+
+    @pytest.mark.asyncio
+    async def test_pas_avant_00h20(self, coordinator, clock):
+        clock.set(hour=0, minute=10)
+        coordinator._cycles_rapides = 1
+        coordinator._jour_hier_semaine = "2026-04-27"
+        assert await self._cycle(coordinator) == "rapide"
+
+    @pytest.mark.asyncio
+    async def test_force_apres_00h20(self, coordinator, clock):
+        clock.set(hour=0, minute=25)
+        coordinator._cycles_rapides = 1
+        coordinator._jour_hier_semaine = "2026-04-27"
+        assert await self._cycle(coordinator) == "complet"
+
+    @pytest.mark.asyncio
+    async def test_une_seule_fois_par_jour(self, coordinator, clock):
+        clock.set(hour=10)
+        coordinator._cycles_rapides = 1
+        coordinator._jour_hier_semaine = "2026-04-28"
+        assert await self._cycle(coordinator) == "rapide"
+
+
+@pytest.mark.asyncio
+async def test_issue_10_rejouee_de_bout_en_bout(coordinator, fake_device, patched_ble, clock):
+    """Deux appels à 9 h et à 10 h, bascule de l'adoucisseur à 9 h 30 entre les deux.
+
+    Avant ce correctif, les valeurs communes aux deux lectures changeaient
+    toutes de date (19 sur 22 dans le rapport de jflefebvre06). Ici tout passe
+    par les vraies sessions BLE : la veille, deux cycles encadrent la bascule
+    et l'apprennent ; le jour même, la seconde lecture voit la case suivante
+    ouverte. Chaque valeur doit garder sa date.
+    """
+    valeurs = [jour_word(10 * (k % 50) + 20) for k in range(1825)]
+
+    async def lire(idx_jour):
+        dev = fake_device(broadcast=make_broadcast(idx_jour=idx_jour, idx_quart=0),
+                          jours=valeurs)
+        with patched_ble(dev):
+            h = await coordinator.service_history_consumption()
+        return {f"{a}-{m}-{j}": v for a, ms in h.items() for m, js in ms.items()
+                for j, v in js.items()}
+
+    async def cycle(idx_jour):
+        with patched_ble(fake_device(broadcast=make_broadcast(idx_jour=idx_jour))):
+            await coordinator._run_rapide(object())
+
+    # La veille : cycles de 9 h 25 et 9 h 40, la case 113 s'ouvre entre les deux
+    clock.set(day=27, hour=9, minute=25)
+    await cycle(112)
+    clock.set(day=27, hour=9, minute=40)
+    await cycle(113)
+    assert coordinator._heure_bascule_texte() == "09:32"
+
+    clock.set(day=28, hour=9, minute=0)
+    avant = await lire(113)             # la case 114 n'existe pas encore
+    clock.set(day=28, hour=10, minute=0)
+    apres = await lire(114)             # ouverte à 9 h 30
+
+    communes = set(avant) & set(apres)
+    assert len(communes) >= 112
+    changees = [d for d in communes if avant[d] != apres[d]]
+    assert not changees, f"{len(changees)} dates ont changé de valeur"
+
+
+@pytest.mark.asyncio
+async def test_total_signale_si_la_bascule_est_apprise(coordinator, fake_device, patched_ble, clock):
+    """`day_rollover_learned` passe à True dès la première bascule observée.
+
+    Avant, le raccord entre cases et quarts est placé à minuit par défaut et le
+    total peut être faux de quelques heures de consommation : une automatisation
+    qui cumule ce total doit pouvoir attendre.
+    """
+    dev = lambda idx: fake_device(broadcast=make_broadcast(idx_jour=idx, idx_quart=0),
+                                  jours=[jour_word(150) for _ in range(1825)])
+    clock.set(hour=9, minute=20)
+    with patched_ble(dev(112)):
+        avant = await coordinator.service_total_consumption()
+    assert avant["day_rollover_learned"] is False
+
+    clock.set(hour=9, minute=35)
+    with patched_ble(dev(113)):            # la lecture elle-même observe la bascule
+        apres = await coordinator.service_total_consumption()
+    assert apres["day_rollover_learned"] is True
+
+
+class TestPassageDeMinuit:
+    """La consommation du jour ne doit jamais baisser entre minuit et 00 h 20.
+
+    Le quart 23 h 45 – 00 h 00 est écrit à minuit pile. Additionné sans être
+    daté, il passait de la veille à la journée en cours ; le cycle complet de
+    00 h 20 le retirait ensuite, et cette baisse faisait croire à Home
+    Assistant que le compteur total_increasing avait été remis à zéro.
+    """
+
+    N = 1000     # index qui suit le quart 23 h 30 – 23 h 45
+
+    def _quarts(self):
+        q = [quart_word(10) for _ in range(2880)]
+        q[self.N] = quart_word(50)            # 23 h 45 – 00 h 00 : la veille
+        return q
+
+    def _etat_a_23h50(self, coordinator, total=500):
+        coordinator._date_dernier_complet = "2026-04-27"
+        coordinator._jour_hier_semaine = "2026-04-27"
+        coordinator._litres_jour_base = coordinator._litres_jour_total = total
+        coordinator._index_base = coordinator._dernier_index_tab_quart = self.N
+        coordinator._cycles_rapides = 1
+
+    async def _cycle(self, coordinator, fake_device, patched_ble, idx_quart):
+        from custom_components.bwt_aqa_perla_ble.const import KEY_CONSUMPTION_TODAY
+        dev = fake_device(broadcast=make_broadcast(idx_quart=idx_quart), quarts=self._quarts())
+        with patched_ble(dev), patch.object(coordinator, "_resolve_ble_device",
+                                            return_value=object()):
+            return (await coordinator._async_update_data())[KEY_CONSUMPTION_TODAY]
+
+    @pytest.mark.asyncio
+    async def test_dernier_quart_de_la_veille_exclu(
+        self, coordinator, fake_device, patched_ble, clock
+    ):
+        self._etat_a_23h50(coordinator)
+        clock.set(hour=0, minute=5)
+        assert await self._cycle(coordinator, fake_device, patched_ble, self.N + 1) == 0
+
+    @pytest.mark.asyncio
+    async def test_aucune_baisse_jusqu_au_cycle_de_00h20(
+        self, coordinator, fake_device, patched_ble, clock
+    ):
+        self._etat_a_23h50(coordinator)
+        valeurs = []
+        clock.set(hour=0, minute=5)
+        valeurs.append(await self._cycle(coordinator, fake_device, patched_ble, self.N + 1))
+        clock.set(hour=0, minute=20)                     # cycle complet forcé
+        valeurs.append(await self._cycle(coordinator, fake_device, patched_ble, self.N + 2))
+        assert valeurs == sorted(valeurs), f"la consommation du jour a baissé : {valeurs}"
+        assert valeurs == [0, 10]
+
+    @pytest.mark.asyncio
+    async def test_veille_sans_consommation(
+        self, coordinator, fake_device, patched_ble, clock
+    ):
+        """Veille à 0 L : pas de reset, et l'index de base reste celui de 23 h 30.
+
+        Les quarts de la veille lus depuis cet index ne doivent pas être
+        comptés dans la nouvelle journée.
+        """
+        self._etat_a_23h50(coordinator, total=0)
+        coordinator._index_base = self.N - 2             # dernier cycle complet
+        clock.set(hour=0, minute=5)
+        assert await self._cycle(coordinator, fake_device, patched_ble, self.N + 1) == 0
+
+
+# ── Compteur d'eau cumulé ────────────────────────────────────────────────────
+
+def _quarts_distincts():
+    """Le quart d'index i vaut i % 50 + 1 litres : chaque erreur se voit."""
+    return [quart_word(i % 50 + 1) for i in range(2880)]
+
+
+def _litres(debut, fin):
+    return sum(i % 50 + 1 for i in range(debut, fin))
+
+
+class TestCompteurEau:
+
+    async def _rapide(self, coordinator, fake_device, patched_ble, idx):
+        from custom_components.bwt_aqa_perla_ble.const import KEY_WATER_METER
+        dev = fake_device(broadcast=make_broadcast(idx_quart=idx), quarts=_quarts_distincts())
+        with patched_ble(dev):
+            return (await coordinator._run_rapide(object()))[KEY_WATER_METER]
+
+    async def _complet(self, coordinator, fake_device, patched_ble, idx, **kw):
+        from custom_components.bwt_aqa_perla_ble.const import KEY_WATER_METER
+        dev = fake_device(broadcast=make_broadcast(idx_quart=idx, **kw),
+                          quarts=_quarts_distincts())
+        with patched_ble(dev):
+            return (await coordinator._run_complet(object()))[KEY_WATER_METER]
+
+    @pytest.mark.asyncio
+    async def test_demarre_a_zero(self, coordinator, fake_device, patched_ble):
+        coordinator._index_base = 100
+        assert await self._rapide(coordinator, fake_device, patched_ble, 100) == 0
+
+    @pytest.mark.asyncio
+    async def test_chaque_quart_compte_une_seule_fois(
+        self, coordinator, fake_device, patched_ble, clock
+    ):
+        """Cycles rapides et complet alternés : ni oubli, ni double comptage."""
+        coordinator._index_base = 100
+        await self._rapide(coordinator, fake_device, patched_ble, 100)
+        clock.advance(minutes=15)
+        await self._rapide(coordinator, fake_device, patched_ble, 101)
+        clock.advance(minutes=15)
+        await self._complet(coordinator, fake_device, patched_ble, 102)
+        clock.advance(minutes=15)
+        valeur = await self._rapide(coordinator, fake_device, patched_ble, 103)
+        assert valeur == _litres(100, 103)
+
+    @pytest.mark.asyncio
+    async def test_releve_repete_sans_nouveau_quart(
+        self, coordinator, fake_device, patched_ble, clock
+    ):
+        coordinator._index_base = 100
+        await self._rapide(coordinator, fake_device, patched_ble, 100)
+        clock.advance(minutes=15)
+        premier = await self._rapide(coordinator, fake_device, patched_ble, 101)
+        clock.advance(minutes=5)
+        assert await self._rapide(coordinator, fake_device, patched_ble, 101) == premier
+
+    @pytest.mark.asyncio
+    async def test_quart_de_23h45_compte(self, coordinator, fake_device, patched_ble, clock):
+        """Le quart écrit à minuit entre dans le compteur, pas dans la journée."""
+        from custom_components.bwt_aqa_perla_ble.const import (
+            KEY_CONSUMPTION_TODAY, KEY_WATER_METER,
+        )
+        n = 1000
+        clock.set(day=27, hour=23, minute=50)
+        coordinator._index_base = n
+        await self._rapide(coordinator, fake_device, patched_ble, n)
+        coordinator._litres_jour_base = coordinator._litres_jour_total = 0
+
+        clock.set(day=28, hour=0, minute=5)
+        dev = fake_device(broadcast=make_broadcast(idx_quart=n + 1), quarts=_quarts_distincts())
+        with patched_ble(dev):
+            r = await coordinator._run_rapide(object())
+        assert r[KEY_CONSUMPTION_TODAY] == 0
+        assert r[KEY_WATER_METER] == n % 50 + 1
+
+    @pytest.mark.asyncio
+    async def test_rattrapage_apres_un_arret_de_dix_jours(
+        self, coordinator, fake_device, patched_ble, clock, store
+    ):
+        """Au redémarrage, les quarts écoulés pendant l'arrêt sont comptés.
+
+        Dix jours, c'est plus que les 7 jours lus par le premier cycle : le
+        compteur doit lire lui-même les quarts manquants.
+        """
+        from unittest.mock import MagicMock
+        from custom_components.bwt_aqa_perla_ble.coordinator import BwtCoordinator
+        coordinator._index_base = 500
+        await self._rapide(coordinator, fake_device, patched_ble, 500)
+
+        clock.advance(days=10)
+        neuf = BwtCoordinator(MagicMock(), "03:12:00:34:00:5E")
+        await neuf.async_load_stored_data()
+        valeur = await self._complet(neuf, fake_device, patched_ble, 500 + 960)
+        assert valeur == _litres(500, 1460)
+
+    @pytest.mark.asyncio
+    async def test_persiste(self, coordinator, fake_device, patched_ble, clock, store):
+        from unittest.mock import MagicMock
+        from custom_components.bwt_aqa_perla_ble.coordinator import BwtCoordinator
+        coordinator._index_base = 100
+        await self._rapide(coordinator, fake_device, patched_ble, 100)
+        clock.advance(minutes=15)
+        valeur = await self._rapide(coordinator, fake_device, patched_ble, 101)
+
+        neuf = BwtCoordinator(MagicMock(), "03:12:00:34:00:5E")
+        await neuf.async_load_stored_data()
+        assert neuf._compteur_litres == valeur and neuf._compteur_idx == 101
+
+    @pytest.mark.asyncio
+    async def test_index_reinitialise_sans_recompter(
+        self, coordinator, fake_device, patched_ble, clock
+    ):
+        """Un index qui recule ne doit pas faire recompter un mois de données."""
+        coordinator._index_base = 2000
+        await self._rapide(coordinator, fake_device, patched_ble, 2000)
+        clock.advance(minutes=15)
+        coordinator._index_base = 100
+        assert await self._rapide(coordinator, fake_device, patched_ble, 100) == 0
+        assert coordinator._compteur_idx == 100
+
+    @pytest.mark.asyncio
+    async def test_cycle_rapide_au_passage_par_la_fin_du_buffer(
+        self, coordinator, fake_device, patched_ble, clock
+    ):
+        """Les quarts de fin et de début de buffer sont lus à leur vraie adresse."""
+        from custom_components.bwt_aqa_perla_ble.const import ADRESSE_TAB_QUART, MAX_TAB_QUART
+        coordinator._index_base = MAX_TAB_QUART - 2
+        await self._rapide(coordinator, fake_device, patched_ble, MAX_TAB_QUART - 2)
+        clock.advance(minutes=45)
+        dev = fake_device(broadcast=make_broadcast(idx_quart=1, loop_quart=True),
+                          quarts=_quarts_distincts())
+        with patched_ble(dev):
+            await coordinator._run_rapide(object())
+        for adresse, nb_oct in dev.reads:
+            assert (adresse - ADRESSE_TAB_QUART) // 2 + nb_oct // 2 <= MAX_TAB_QUART
+        assert coordinator._compteur_litres == _litres(MAX_TAB_QUART - 2, MAX_TAB_QUART) + _litres(0, 1)

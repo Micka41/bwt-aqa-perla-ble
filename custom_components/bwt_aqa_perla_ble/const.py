@@ -51,6 +51,7 @@ KEY_SALT_KG               = "salt_kg"
 KEY_SALT_TOTAL_KG         = "salt_total_kg"
 KEY_SALT_ALARM            = "salt_alarm"
 KEY_CONSUMPTION_TODAY     = "consumption_today"
+KEY_WATER_METER           = "water_meter"
 KEY_CONSUMPTION_YESTERDAY = "consumption_yesterday"
 KEY_CONSUMPTION_WEEK      = "consumption_week"
 KEY_REGEN_TODAY           = "regen_today"
@@ -62,6 +63,7 @@ KEY_AVG_DAILY_30D         = "avg_daily_consumption_30d"
 KEY_LAST_SYNC             = "last_sync"
 KEY_FIRMWARE              = "firmware"
 KEY_DEBUG_BROADCAST       = "debug_broadcast"
+KEY_DAY_ROLLOVER          = "day_rollover"
 
 # ── Stockage persistant ──────────────────────────────────────────────────────
 # Conserve la date de fin d'autonomie entre les redémarrages de Home Assistant.

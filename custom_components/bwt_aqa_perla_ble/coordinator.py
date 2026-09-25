@@ -1,28 +1,32 @@
 """DataUpdateCoordinator for BWT AQA Perla.
 
-Stratégie duale portée de bwt_service.py :
+L'adoucisseur tient deux historiques : des quarts d'heure (30 jours, au litre
+près) et des cases journalières (5 ans, en dizaines de litres). Les cases
+journalières ne sont pas découpées à minuit : chaque appareil change de case à
+une heure qui lui est propre, apprise en l'observant (voir datation.py).
 
   Cycle RAPIDE (toutes les 15 min) :
-    BROADCAST + quarts depuis _index_base → ~5s BLE
+    BROADCAST + quarts depuis _index_base → ~5 s BLE
     litres_jour = _litres_jour_base + delta
 
-  Cycle COMPLET (toutes les 1h, forcé à 04h00) :
-    BROADCAST + derniers 120 quarts + 8 derniers jours → ~20s BLE
-    recalcule _litres_jour_base et _index_base
-    met à jour conso_hier et conso_semaine (stables, protégées)
+  Cycle COMPLET (toutes les heures) :
+    BROADCAST + 120 derniers quarts + 365 cases journalières → ~20 s BLE
+    recalibre la consommation du jour, la moyenne 30 jours et l'autonomie.
+    Le premier de chaque journée, dès 00 h 20, remonte les quarts jusqu'à
+    J-7 pour calculer hier et 7 jours, découpés à minuit.
 
   Reset minuit :
     _litres_jour_base = 0, _index_base = _dernier_index_tab_quart
 
-  conso_hier / conso_semaine : mémorisées, ne mises à jour que si valeur > 0
-  (le BWT consolide J-1 vers 04h00, pas à minuit).
+  À chaque lecture du BROADCAST, l'index journalier est comparé au précédent
+  pour apprendre l'heure de bascule de l'appareil.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
 from contextlib import asynccontextmanager, suppress
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from bleak import BleakClient
@@ -35,6 +39,12 @@ from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
+from .datation import (
+    ApprentissageBascule,
+    dater_cases,
+    historique_par_jour,
+    total_sur_jours,
+)
 from .const import (
     DOMAIN,
     STORAGE_KEY,
@@ -61,6 +71,7 @@ from .const import (
     KEY_SALT_TOTAL_KG,
     KEY_SALT_ALARM,
     KEY_CONSUMPTION_TODAY,
+    KEY_WATER_METER,
     KEY_CONSUMPTION_YESTERDAY,
     KEY_CONSUMPTION_WEEK,
     KEY_REGEN_TODAY,
@@ -72,6 +83,7 @@ from .const import (
     KEY_LAST_SYNC,
     KEY_FIRMWARE,
     KEY_DEBUG_BROADCAST,
+    KEY_DAY_ROLLOVER,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -168,6 +180,7 @@ def _decode_broadcast(buf: bytes) -> dict[str, Any]:
         "vol_sel_rege":     _get_word_le(buf, 8),
         "capa_total_sel":   capa_total,
         "alarme":           bool(flags & 0x01),
+        "loop_quart":       bool(flags & 0x02),
         "loop_jour":        bool(flags & 0x04),
         "pourcentage_sel":  pct,
         "version":          f"A22X V{buf[13]}.{buf[14]}",
@@ -213,6 +226,11 @@ def _decode_notification(buf: bytes, is_quart: bool) -> tuple[int, list[dict]]:
 
 # ── Coordinator ──────────────────────────────────────────────────────────────
 
+def cle_stockage(address: str) -> str:
+    """Clé du fichier .storage propre à un adoucisseur."""
+    return f"{STORAGE_KEY}.{address.replace(':', '').lower()}"
+
+
 class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     """Coordinator BWT AQA Perla — dual cycle rapide/complet."""
 
@@ -240,12 +258,23 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._litres_jour_total: int = 0
         self._dernier_index_tab_quart: int = 0
 
-        # Valeurs stables (mémorisées, protégées contre non-consolidation)
-        self._conso_hier_stable:    int = 0
-        self._conso_semaine_stable: int = 0
+        # Valeurs mémorisées entre deux cycles complets
+        self._conso_hier_stable:    int | None = None
+        self._conso_semaine_stable: int | None = None
         self._regens_jour_stable:   int = 0
         self._coupures_jour_stable: int = 0
-        self._date_hier_stable:     str = ""
+        # Hier et 7 jours : calculés depuis les quarts, une fois par jour
+        self._jour_hier_semaine:    str = ""   # date du dernier calcul
+
+        # Heure à laquelle l'adoucisseur ouvre une nouvelle case journalière
+        self._bascule = ApprentissageBascule()
+
+        # Compteur d'eau cumulé : ne revient jamais à zéro. Il additionne chaque
+        # quart d'heure exactement une fois — y compris celui de 23 h 45, écrit
+        # à minuit, que la consommation du jour ne voit jamais.
+        self._compteur_litres: int = 0
+        self._compteur_idx: int | None = None       # prochain quart à compter
+        self._compteur_instant: datetime | None = None
         self._firmware:             str = ""
 
         # Moyenne 30 jours glissants
@@ -267,9 +296,7 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._debug_broadcast_history: list[str] = []  # dernières 10 trames BROADCAST
 
         # Stockage persistant : survit aux redémarrages de Home Assistant
-        self._store: Store = Store(
-            hass, STORAGE_VERSION, f"{STORAGE_KEY}.{address.replace(':', '').lower()}"
-        )
+        self._store: Store = Store(hass, STORAGE_VERSION, cle_stockage(address))
 
     def _store_broadcast_debug(self, buf: bytes) -> None:
         """Stocker la trame BROADCAST pour l'entité diagnostic."""
@@ -304,10 +331,19 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._autonomie_jours    = stored.get("autonomy_days")
         self._autonomie_semaines = stored.get("autonomy_weeks")
         self._regens_precedent   = stored.get("previous_regens", 0)
+        self._bascule = ApprentissageBascule.depuis_dict(stored.get("day_rollover"))
+
+        compteur = stored.get("water_meter") or {}
+        try:
+            self._compteur_litres = int(compteur["liters"])
+            self._compteur_idx = int(compteur["next_index"])
+            self._compteur_instant = datetime.fromisoformat(compteur["at"])
+        except (KeyError, TypeError, ValueError):
+            self._compteur_litres, self._compteur_idx, self._compteur_instant = 0, None, None
 
         _LOGGER.debug(
-            "Restored state: autonomy_date=%s days=%s",
-            self._autonomie_date, self._autonomie_jours,
+            "Restored state: autonomy_date=%s days=%s day_rollover=%s",
+            self._autonomie_date, self._autonomie_jours, self._heure_bascule_texte(),
         )
 
     def _persist_state(self) -> None:
@@ -320,8 +356,122 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "autonomy_days":   self._autonomie_jours,
                 "autonomy_weeks":  self._autonomie_semaines,
                 "previous_regens": self._regens_precedent,
+                "day_rollover":    self._bascule.vers_dict(),
+                "water_meter": (
+                    {
+                        "liters":     self._compteur_litres,
+                        "next_index": self._compteur_idx,
+                        "at":         self._compteur_instant.isoformat(),
+                    }
+                    if self._compteur_idx is not None else None
+                ),
             },
             delay=10,
+        )
+
+    # ── Heure de bascule journalière ──────────────────────────────────
+
+    def _observer_bascule(self, idx_jour: int) -> None:
+        """Note l'index journalier lu ; date la bascule s'il vient d'avancer.
+
+        Chaque adoucisseur ouvre sa case journalière suivante à une heure qui
+        lui est propre (vers 4 h chez l'un, 9 h 30 chez l'autre, issue #10).
+        Elle n'est documentée nulle part : on l'apprend en observant l'index.
+        """
+        if self._bascule.observer(idx_jour, dt_util.now(), MAX_TAB_JOUR):
+            _LOGGER.info(
+                "Day rollover observed (index %d) — learned rollover time %s "
+                "from %d observation(s)",
+                idx_jour, self._heure_bascule_texte(), len(self._bascule.observations),
+            )
+            self._persist_state()
+
+    def _heure_bascule_texte(self) -> str | None:
+        heure = self._bascule.heure
+        return None if heure is None else f"{heure // 60:02d}:{heure % 60:02d}"
+
+    def _dater_jours(self, jours: list[dict], idx_jour: int) -> list[dict]:
+        """Date les cases journalières d'après la bascule apprise.
+
+        Tant qu'aucune bascule n'a été observée, on suppose qu'elle a lieu à
+        minuit : la dernière case close est la veille, comme dans les versions
+        précédentes.
+        """
+        maintenant = dt_util.now()
+        bascule = self._bascule.derniere_bascule(idx_jour, maintenant, MAX_TAB_JOUR)
+        if bascule is None:
+            bascule = maintenant.replace(hour=0, minute=0, second=0, microsecond=0)
+        return dater_cases(jours, idx_jour, MAX_TAB_JOUR, bascule)
+
+    # ── Compteur d'eau cumulé ─────────────────────────────────────────
+
+    async def _mettre_a_jour_compteur(
+        self, client, bcast: dict, quarts_lus: list[dict]
+    ) -> None:
+        """Ajoute au compteur les quarts écrits depuis le dernier comptage.
+
+        Appelée dans la session BLE de chaque cycle : les quarts non encore
+        comptés qui ne figurent pas dans la lecture du cycle — après un
+        redémarrage de Home Assistant, par exemple — sont lus en complément.
+        """
+        idx_q = bcast["index_tab_quart"]
+        maintenant = dt_util.now()
+
+        if self._compteur_idx is None:
+            # Première mise en service : le compteur part de zéro, maintenant
+            self._compteur_idx, self._compteur_instant = idx_q, maintenant
+            self._persist_state()
+            return
+
+        a_compter = (idx_q - self._compteur_idx) % MAX_TAB_QUART
+        if a_compter == 0:
+            return
+
+        # L'index ne peut pas avoir avancé de plus d'un quart par quart d'heure
+        # écoulé. Au-delà, il a été réinitialisé côté appareil : on se recale
+        # sans rien compter, plutôt que de recompter un mois de données.
+        attendus = int((maintenant - self._compteur_instant) / timedelta(minutes=15)) + 2
+        if a_compter > attendus:
+            _LOGGER.warning(
+                "Water meter: quarter-hour index jumped by %d (at most %d expected) "
+                "— resynchronising without counting",
+                a_compter, attendus,
+            )
+            self._compteur_idx, self._compteur_instant = idx_q, maintenant
+            self._persist_state()
+            return
+
+        disponibles = MAX_TAB_QUART if bcast["loop_quart"] else idx_q
+        if a_compter > disponibles:
+            _LOGGER.warning(
+                "Water meter: %d quarter-hours were overwritten before they could be "
+                "counted (Home Assistant stopped for more than 30 days?)",
+                a_compter - disponibles,
+            )
+            self._compteur_idx = (idx_q - disponibles) % MAX_TAB_QUART
+            a_compter = disponibles
+
+        litres = {q["idx"]: q["litres"] for q in quarts_lus}
+        absents = 0
+        while absents < a_compter and (self._compteur_idx + absents) % MAX_TAB_QUART not in litres:
+            absents += 1
+        if absents:
+            for q in await self._lire_plage(
+                client, ADRESSE_TAB_QUART, self._compteur_idx, absents,
+                MAX_TAB_QUART, is_quart=True,
+            ):
+                litres[q["idx"]] = q["litres"]
+
+        ajout = sum(
+            litres.get((self._compteur_idx + k) % MAX_TAB_QUART, 0)
+            for k in range(a_compter)
+        )
+        self._compteur_litres += ajout
+        self._compteur_idx, self._compteur_instant = idx_q, maintenant
+        self._persist_state()
+        _LOGGER.debug(
+            "Water meter: +%d L over %d quarter-hour(s) → %d L",
+            ajout, a_compter, self._compteur_litres,
         )
 
     # ── Session BLE ───────────────────────────────────────────────────
@@ -378,6 +528,7 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._store_broadcast_debug(buf)
             bcast = _decode_broadcast(buf)
             self._dernier_index_tab_quart = bcast["index_tab_quart"]
+            self._observer_bascule(bcast["index_tab_jour"])
             if bcast["version"]:
                 self._firmware = bcast["version"]
 
@@ -421,18 +572,18 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._index_base        = self._dernier_index_tab_quart
             self._date_remise_a_zero = aujourd_hui
 
-        # Sélection du type de cycle
-        nouveau_jour_apres_04h = changement_jour and now_hm >= 240
+        # Sélection du type de cycle. Hier et 7 jours se calculent sur les
+        # quarts d'heure : dès 00 h 20, la veille est entièrement écrite.
+        hier_a_calculer = self._jour_hier_semaine != aujourd_hui and now_hm >= 20
         faire_complet = (
             self._cycles_rapides % _CYCLES_PAR_COMPLET == 0
-            or nouveau_jour_apres_04h
+            or hier_a_calculer
         )
 
         try:
             if faire_complet:
-                if nouveau_jour_apres_04h and self._cycles_rapides > 0:
-                    _LOGGER.info("New day after 04:00 — forcing full cycle")
-                    self._date_dernier_complet = aujourd_hui
+                if hier_a_calculer and self._cycles_rapides > 0:
+                    _LOGGER.info("New day — forcing full cycle for yesterday and last 7 days")
                 result = await self._run_complet(ble_device)
             else:
                 result = await self._run_rapide(ble_device)
@@ -452,11 +603,22 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             nb  = (idx - self._index_base) % MAX_TAB_QUART
             quarts: list[dict] = []
             if nb > 0:
-                quarts = await self._lire_blocs(
-                    client, ADRESSE_TAB_QUART, self._index_base, nb, is_quart=True
+                quarts = await self._lire_plage(
+                    client, ADRESSE_TAB_QUART, self._index_base, nb,
+                    MAX_TAB_QUART, is_quart=True,
                 )
+            await self._mettre_a_jour_compteur(client, bcast, quarts)
 
-        delta = sum(q["litres"] for q in quarts)
+        # Ne compter que les quarts d'aujourd'hui. Juste après minuit, les
+        # nouveaux quarts incluent celui de 23 h 45 – 00 h 00, écrit à minuit
+        # pile : l'additionner sans le dater le ferait passer de la veille à la
+        # journée en cours, puis le cycle complet suivant le retirerait — une
+        # baisse qu'un capteur total_increasing prend pour une remise à zéro.
+        aujourd_hui = dt_util.now().date().isoformat()
+        delta = sum(
+            q["litres"] for q in self._dater_quarts(quarts, idx)
+            if q["date"] == aujourd_hui
+        )
         self._litres_jour_total = self._litres_jour_base + delta
         _LOGGER.debug(
             "Fast cycle — base=%d + delta=%d = %d L",
@@ -467,75 +629,42 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     # ── Cycle complet ─────────────────────────────────────────────────
 
     async def _run_complet(self, ble_device) -> dict[str, Any]:
-        """BROADCAST + 120 quarts + 8 jours → recalibrage complet."""
+        """BROADCAST + quarts + 365 jours → recalibrage complet.
+
+        Une fois par jour, la lecture des quarts remonte à J-7 pour recalculer
+        la consommation d'hier et des 7 derniers jours ; le reste du temps,
+        les 120 derniers quarts suffisent à la journée en cours.
+        """
+        maintenant  = dt_util.now()
+        aujourd_hui = maintenant.date()
+        recalcul_hier = self._jour_hier_semaine != aujourd_hui.isoformat()
+
+        if recalcul_hier:
+            debut_semaine = maintenant.replace(
+                hour=0, minute=0, second=0, microsecond=0
+            ) - timedelta(days=7)
+            nb_q = int((maintenant - debut_semaine) / timedelta(minutes=15)) + 1
+        else:
+            nb_q = NB_QUARTS_COMPLET
+
         async with self._ble_session(ble_device) as (client, bcast):
-            # Quarts — gestion du buffer circulaire (wrap tous les 30 jours)
             idx_q = bcast["index_tab_quart"]
-            nb_q  = min(NB_QUARTS_COMPLET, MAX_TAB_QUART)
-            quarts: list[dict] = []
-            if idx_q >= nb_q:
-                # Cas normal : pas de wrap dans la fenêtre
-                quarts = await self._lire_blocs(
-                    client, ADRESSE_TAB_QUART, idx_q - nb_q, nb_q, is_quart=True
-                )
-            else:
-                # Wrap (inclut idx_q == 0) : lire en deux parties
-                nb_partie1 = nb_q - idx_q
-                debut1 = MAX_TAB_QUART - nb_partie1
-                quarts = await self._lire_blocs(
-                    client, ADRESSE_TAB_QUART, debut1, nb_partie1, is_quart=True
-                )
-                if idx_q > 0:
-                    quarts += await self._lire_blocs(
-                        client, ADRESSE_TAB_QUART, 0, idx_q, is_quart=True
-                    )
-
-            # Jours — gestion du buffer circulaire (wrap après 5 ans)
             idx_j = bcast["index_tab_jour"]
-            nb_j  = min(NB_JOURS_COMPLET, MAX_TAB_JOUR)
-            jours: list[dict] = []
-            if idx_j >= nb_j:
-                # Cas normal
-                jours = await self._lire_blocs(
-                    client, ADRESSE_TAB_JOUR, idx_j - nb_j, nb_j, is_quart=False
-                )
-            else:
-                # Wrap (inclut idx_j == 0)
-                nb_partie1 = nb_j - idx_j
-                debut1 = MAX_TAB_JOUR - nb_partie1
-                jours = await self._lire_blocs(
-                    client, ADRESSE_TAB_JOUR, debut1, nb_partie1, is_quart=False
-                )
-                if idx_j > 0:
-                    jours += await self._lire_blocs(
-                        client, ADRESSE_TAB_JOUR, 0, idx_j, is_quart=False
-                    )
-
-        # Dater les quarts d'après leur index absolu dans le buffer.
-        # L'entrée idx_q - 1 est la plus récente : elle correspond au dernier
-        # quart d'heure terminé. Les autres s'en déduisent en remontant le
-        # buffer, ce qui reste juste même si des entrées manquent à la lecture.
-        _now     = dt_util.now()
-        _min_arr = (_now.minute // 15) * 15
-        ancre_q  = _now.replace(minute=_min_arr, second=0, microsecond=0) - timedelta(minutes=15)
-        quarts_dates = [
-            {**q, "date": q["date"].strftime("%Y-%m-%d")}
-            for q in _dater_entrees(
-                quarts, idx_q, MAX_TAB_QUART, ancre_q, timedelta(minutes=15)
+            quarts = await self._lire_derniers(
+                client, ADRESSE_TAB_QUART, idx_q, nb_q,
+                MAX_TAB_QUART, bcast["loop_quart"], is_quart=True,
             )
-        ]
-
-        # Même principe pour les jours : idx_j - 1 correspond à hier.
-        hier_d = dt_util.now().date() - timedelta(days=1)
-        jours_dates = [
-            {**j, "date": j["date"].isoformat()}
-            for j in _dater_entrees(
-                jours, idx_j, MAX_TAB_JOUR, hier_d, timedelta(days=1)
+            jours = await self._lire_derniers(
+                client, ADRESSE_TAB_JOUR, idx_j, NB_JOURS_COMPLET,
+                MAX_TAB_JOUR, bcast["loop_jour"], is_quart=False,
             )
-        ]
+            await self._mettre_a_jour_compteur(client, bcast, quarts)
+
+        quarts_dates = self._dater_quarts(quarts, idx_q)
+        jours_dates  = self._dater_jours(jours, idx_j)
 
         # Recalibrer conso jour depuis les quarts d'aujourd'hui
-        aujourd_hui_str = dt_util.now().date().isoformat()
+        aujourd_hui_str = aujourd_hui.isoformat()
         quarts_auj = [q for q in quarts_dates if q["date"] == aujourd_hui_str]
         self._litres_jour_base  = sum(q["litres"] for q in quarts_auj)
         self._index_base        = bcast["index_tab_quart"]
@@ -556,28 +685,99 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._regens_jour_stable   = regens
         self._coupures_jour_stable = coupures
 
-        # Hier / semaine
-        self._mettre_a_jour_hier_semaine({j["date"]: j for j in jours_dates})
+        if recalcul_hier:
+            self._calculer_hier_semaine(quarts_dates, maintenant)
 
-        # Moyenne 30 jours glissants (J-1 à J-30, jours consolidés uniquement)
-        hier_d_iso = (dt_util.now().date() - timedelta(days=1)).isoformat()
+        # Moyenne sur les 30 dernières cases journalières. Chaque case couvre
+        # une journée de l'adoucisseur plutôt qu'une journée calendaire, mais
+        # sur 30 jours ce décalage ne déplace de l'eau qu'aux deux extrémités.
         jours_30 = [
-            j["litres"] for j in jours_dates
-            if j["date"] <= hier_d_iso   # exclure aujourd'hui non consolidé
-        ][-30:]   # 30 derniers jours disponibles
+            j["litres"] for j in sorted(jours_dates, key=lambda e: e["fin"])
+        ][-30:]
         self._avg_daily_30d = round(sum(jours_30) / len(jours_30), 1) if jours_30 else None
         _LOGGER.debug("30-day average: %s L/d (%d days)", self._avg_daily_30d, len(jours_30))
 
         # Autonomie sel : sel_restant / (regens_moy_jour × sel_par_regen)
-        # Moyenne sur les jours disponibles avec au moins 1 régénération
         self._calculer_autonomie(bcast, jours_dates)
 
         _LOGGER.info(
-            "Full cycle — base=%d L  index=%d  regens=%d  yesterday=%d L  week=%d L",
-            self._litres_jour_base, self._index_base,
-            self._regens_jour_stable, self._conso_hier_stable, self._conso_semaine_stable,
+            "Full cycle — base=%d L  index=%d  regens=%d  yesterday=%s L  week=%s L  "
+            "day rollover=%s",
+            self._litres_jour_base, self._index_base, self._regens_jour_stable,
+            self._conso_hier_stable, self._conso_semaine_stable,
+            self._heure_bascule_texte() or "not learned yet",
         )
         return self._build_result(bcast)
+
+    def _calculer_hier_semaine(self, quarts_dates: list[dict], maintenant) -> None:
+        """Consommation d'hier et des 7 derniers jours, depuis les quarts d'heure.
+
+        Découpage à minuit et précision au litre, comme l'application BWT, et
+        indépendant de l'heure à laquelle l'adoucisseur change de case
+        journalière. Le calcul n'est validé qu'à partir de 00 h 20 : avant, le
+        dernier quart de la veille peut ne pas être encore écrit.
+        """
+        aujourd_hui = maintenant.date()
+        hier = aujourd_hui - timedelta(days=1)
+        self._conso_hier_stable    = total_sur_jours(quarts_dates, hier, hier)
+        self._conso_semaine_stable = total_sur_jours(
+            quarts_dates, aujourd_hui - timedelta(days=7), hier
+        )
+        if maintenant.hour * 60 + maintenant.minute >= 20:
+            self._jour_hier_semaine = aujourd_hui.isoformat()
+        _LOGGER.info(
+            "Yesterday: %s L — last 7 days: %s L (from quarter-hour data)",
+            self._conso_hier_stable, self._conso_semaine_stable,
+        )
+
+    def _dater_quarts(self, quarts: list[dict], idx_q: int) -> list[dict]:
+        """Date les quarts d'après leur index absolu.
+
+        L'entrée idx_q - 1 est la plus récente : elle correspond au dernier
+        quart d'heure terminé. Chaque quart reçoit son instant de début
+        (`debut`) et sa date calendaire (`date`).
+        """
+        maintenant = dt_util.now()
+        ancre = maintenant.replace(
+            minute=(maintenant.minute // 15) * 15, second=0, microsecond=0
+        ) - timedelta(minutes=15)
+        return [
+            {**q, "debut": q["date"], "date": q["date"].date().isoformat()}
+            for q in _dater_entrees(
+                quarts, idx_q, MAX_TAB_QUART, ancre, timedelta(minutes=15)
+            )
+        ]
+
+    async def _lire_plage(
+        self, client, adresse: int, debut: int, nb: int, taille: int, is_quart: bool,
+    ) -> list[dict]:
+        """Lit `nb` entrées à partir de l'index `debut`, en repassant par zéro.
+
+        Une plage qui franchit la fin du buffer circulaire est lue en deux
+        fois : d'un seul tenant, la lecture déborderait du tableau.
+        """
+        if nb <= 0:
+            return []
+        debut %= taille
+        if debut + nb <= taille:
+            return await self._lire_blocs(client, adresse, debut, nb, is_quart)
+        premiere = taille - debut
+        return (
+            await self._lire_blocs(client, adresse, debut, premiere, is_quart)
+            + await self._lire_blocs(client, adresse, 0, nb - premiere, is_quart)
+        )
+
+    async def _lire_derniers(
+        self, client, adresse: int, idx: int, nb: int,
+        taille: int, boucle: bool, is_quart: bool,
+    ) -> list[dict]:
+        """Lit les `nb` dernières entrées d'un buffer circulaire, jusqu'à idx - 1.
+
+        Tant que le buffer n'a pas fait un tour complet, seules ses `idx`
+        premières cases sont écrites.
+        """
+        nb = min(nb, taille if boucle else idx)
+        return await self._lire_plage(client, adresse, idx - nb, nb, taille, is_quart)
 
     # ── Calcul de l'autonomie sel ─────────────────────────────────────
 
@@ -652,50 +852,6 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._autonomie_jours, self._autonomie_semaines,
             qte_sel, total_regens, nb_jours, sel_par_jour,
         )
-
-    # ── Stabilisation hier / semaine ─────────────────────────────────
-
-    def _mettre_a_jour_hier_semaine(self, jours_dict: dict[str, dict]) -> None:
-        """Protège contre la non-consolidation du BWT (J-1 consolidé vers 04h00)."""
-        hier_iso    = (dt_util.now().date() - timedelta(days=1)).isoformat()
-        entree_hier = jours_dict.get(hier_iso)
-        val_hier    = entree_hier["litres"] if entree_hier else 0
-
-        # Le BWT consolide J-1 vers 04h00. Après cette heure, une valeur nulle
-        # est légitime — le buffer journalier stocke par tranches de 10 L, donc
-        # une consommation inférieure y est enregistrée comme 0 — et ne doit pas
-        # être confondue avec « pas encore consolidé ».
-        consolide = dt_util.now().hour >= 4
-
-        if val_hier > 0 or (consolide and entree_hier is not None):
-            self._conso_hier_stable = val_hier
-            self._date_hier_stable  = hier_iso
-            _LOGGER.info("Yesterday consumption consolidated: %d L", self._conso_hier_stable)
-        elif self._date_hier_stable != hier_iso and self._conso_hier_stable == 0:
-            # Pas encore consolidé → chercher dernière valeur non-nulle
-            for i in range(1, 8):
-                d = (dt_util.now().date() - timedelta(days=i)).isoformat()
-                e = jours_dict.get(d)
-                if e and e["litres"] > 0:
-                    self._conso_hier_stable = e["litres"]
-                    _LOGGER.info(
-                        "Yesterday provisional consumption from %s: %d L", d, self._conso_hier_stable
-                    )
-                    break
-
-        # Semaine : 7 jours J-1..J-7 (mis à jour uniquement si J-1 consolidé)
-        if entree_hier is not None:
-            self._conso_semaine_stable = sum(
-                jours_dict[d]["litres"]
-                for i in range(1, 8)
-                if (d := (dt_util.now().date() - timedelta(days=i)).isoformat()) in jours_dict
-            )
-            _LOGGER.info("Weekly consumption: %d L", self._conso_semaine_stable)
-        else:
-            _LOGGER.info(
-                "Weekly consumption: yesterday not yet consolidated — keeping stable value (%d L)",
-                self._conso_semaine_stable,
-            )
 
     # ── Lecture des blocs mémoire flash ──────────────────────────────
 
@@ -840,7 +996,7 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     # ── Services HA ───────────────────────────────────────────────────
 
-    async def _read_full_history(self) -> list[dict]:
+    async def _read_full_history(self) -> dict:
         """Lit tout l'historique journalier, en relançant une lecture ratée.
 
         Chaque tentative ouvre sa propre session BLE : l'appareil repart d'un
@@ -861,74 +1017,89 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 await asyncio.sleep(_DELAI_ENTRE_TENTATIVES)
         raise AssertionError("unreachable")
 
-    async def _read_full_history_once(self) -> list[dict]:
-        """Une tentative de lecture de l'historique journalier (jusqu'à 1825 jours)."""
+    async def _read_full_history_once(self) -> dict:
+        """Une tentative : lit les deux buffers en entier et les date.
+
+        Le buffer journalier remonte jusqu'à 5 ans ; le buffer des quarts
+        d'heure couvre les 30 derniers jours, au litre près.
+        """
         async with self._ble_session() as (client, bcast):
-            idx_j     = bcast["index_tab_jour"]
-            loop_jour = bcast["loop_jour"]
-
-            if loop_jour:
-                # Buffer plein (>5 ans) : lire les 1825 jours en 2 parties
-                # idx_j pointe sur le plus ancien → partie 1 : idx_j..fin, partie 2 : 0..idx_j-1
-                jours = await self._lire_blocs(
-                    client, ADRESSE_TAB_JOUR, idx_j, MAX_TAB_JOUR - idx_j, is_quart=False
-                )
-                if idx_j > 0:
-                    jours += await self._lire_blocs(
-                        client, ADRESSE_TAB_JOUR, 0, idx_j, is_quart=False
-                    )
-            elif idx_j > 0:
-                # Buffer non plein : lire idx_j entrées depuis le début
-                jours = await self._lire_blocs(
-                    client, ADRESSE_TAB_JOUR, 0, idx_j, is_quart=False
-                )
-            else:
-                jours = []
-
-        # Dater d'après l'index absolu : idx_j - 1 correspond à hier.
-        hier_d = dt_util.now().date() - timedelta(days=1)
-        return [
-            {**j, "date": j["date"].isoformat()}
-            for j in _dater_entrees(
-                jours, idx_j, MAX_TAB_JOUR, hier_d, timedelta(days=1)
+            idx_j = bcast["index_tab_jour"]
+            idx_q = bcast["index_tab_quart"]
+            jours = await self._lire_derniers(
+                client, ADRESSE_TAB_JOUR, idx_j, MAX_TAB_JOUR,
+                MAX_TAB_JOUR, bcast["loop_jour"], is_quart=False,
             )
-        ]
+            quarts = await self._lire_derniers(
+                client, ADRESSE_TAB_QUART, idx_q, MAX_TAB_QUART,
+                MAX_TAB_QUART, bcast["loop_quart"], is_quart=True,
+            )
+
+        return {
+            "jours":       self._dater_jours(jours, idx_j),
+            "quarts":      self._dater_quarts(quarts, idx_q),
+            "aujourd_hui": dt_util.now().date(),
+        }
+
+    async def _historique(self, champ: str) -> dict:
+        """Valeur par journée calendaire close, sur tout l'historique disponible.
+
+        Les 29 derniers jours viennent des quarts d'heure : découpage à minuit
+        et précision au litre, comme l'application BWT. Au-delà, des cases
+        journalières, datées d'après l'heure de bascule apprise.
+        """
+        lecture = await self._read_full_history()
+        return historique_par_jour(
+            lecture["jours"], lecture["quarts"], lecture["aujourd_hui"], champ
+        )
+
+    @staticmethod
+    def _par_annee_mois_jour(historique: dict) -> dict:
+        result: dict = {}
+        for jour, valeur in historique.items():
+            annee, mois, j = jour.isoformat().split("-")
+            result.setdefault(annee, {}).setdefault(mois, {})[j] = valeur
+        return result
 
     async def service_total_consumption(self) -> dict:
-        """Service get_total_consumption — total en litres depuis l'historique complet."""
-        jours = await self._read_full_history()
-        total = sum(j["litres"] for j in jours)
-        _LOGGER.info("Total history: %d L over %d days", total, len(jours))
+        """Service get_total_consumption — total en litres jusqu'à hier inclus.
+
+        La journée en cours n'est pas comptée : elle est déjà exposée par le
+        capteur de consommation du jour.
+        """
+        historique = await self._historique("litres")
+        total = sum(historique.values())
+        jours = list(historique)
+
+        # Tant que l'heure de bascule n'est pas apprise, le raccord entre cases
+        # journalières et quarts d'heure est placé à minuit par défaut : le
+        # total peut alors compter deux fois, ou pas du tout, les quelques
+        # heures entre la bascule réelle et minuit. On le signale pour que les
+        # automatisations qui cumulent ce total puissent attendre.
+        appris = self._bascule.heure is not None
+        if appris:
+            _LOGGER.info("Total history: %d L over %d days", total, len(jours))
+        else:
+            _LOGGER.info(
+                "Total history: %d L over %d days — day rollover not learned yet, "
+                "the total may be off by a few hours of consumption",
+                total, len(jours),
+            )
         return {
-            "total_liters":  total,
-            "days_count":    len(jours),
-            "from_date":     jours[0]["date"] if jours else None,
-            "to_date":       jours[-1]["date"] if jours else None,
+            "total_liters":         total,
+            "days_count":           len(jours),
+            "from_date":            jours[0].isoformat() if jours else None,
+            "to_date":              jours[-1].isoformat() if jours else None,
+            "day_rollover_learned": appris,
         }
 
     async def service_history_consumption(self) -> dict:
-        """Service get_history_consumption — consommation par année/mois/jour."""
-        jours = await self._read_full_history()
-        result: dict = {}
-        # L'ordre de lecture est déjà chronologique, wrap du buffer compris.
-        # Le tri le garantit explicitement plutôt que de le faire dépendre de
-        # l'ordre des blocs demandés.
-        for j in sorted(jours, key=lambda e: e["date"]):
-            annee, mois, jour = j["date"].split("-")
-            result.setdefault(annee, {}).setdefault(mois, {})[jour] = j["litres"]
-        return result
+        """Service get_history_consumption — litres par année/mois/jour."""
+        return self._par_annee_mois_jour(await self._historique("litres"))
 
     async def service_history_regenerations(self) -> dict:
         """Service get_history_regenerations — régénérations par année/mois/jour."""
-        jours = await self._read_full_history()
-        result: dict = {}
-        # L'ordre de lecture est déjà chronologique, wrap du buffer compris.
-        # Le tri le garantit explicitement plutôt que de le faire dépendre de
-        # l'ordre des blocs demandés.
-        for j in sorted(jours, key=lambda e: e["date"]):
-            annee, mois, jour = j["date"].split("-")
-            result.setdefault(annee, {}).setdefault(mois, {})[jour] = j["rege"]
-        return result
+        return self._par_annee_mois_jour(await self._historique("rege"))
 
     # ── Construction du résultat HA ───────────────────────────────────
 
@@ -938,9 +1109,12 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             KEY_SALT_KG:               round(bcast["qte_sel_restant"] / 1000, 2),
             KEY_SALT_TOTAL_KG:         round(bcast["capa_total_sel"]  / 1000, 2),
             KEY_SALT_ALARM:            bcast["alarme"],
+            KEY_WATER_METER:           (
+                self._compteur_litres if self._compteur_idx is not None else None
+            ),
             KEY_CONSUMPTION_TODAY:     self._litres_jour_total,
-            KEY_CONSUMPTION_YESTERDAY: self._conso_hier_stable if self._date_hier_stable != "" else None,
-            KEY_CONSUMPTION_WEEK:      self._conso_semaine_stable if self._date_hier_stable != "" else None,
+            KEY_CONSUMPTION_YESTERDAY: self._conso_hier_stable,
+            KEY_CONSUMPTION_WEEK:      self._conso_semaine_stable,
             KEY_REGEN_TODAY:           self._regens_jour_stable,
             KEY_CUTOFF_TODAY:          self._coupures_jour_stable,
             KEY_SALT_AUTONOMY_DAYS:    self._autonomie_jours,
@@ -953,4 +1127,8 @@ class BwtCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # que la dernière trame, l'historique passe par les attributs.
             KEY_DEBUG_BROADCAST:       self._debug_broadcast_history[-1] if self._debug_broadcast_history else "No data",
             "debug_broadcast_frames":  list(self._debug_broadcast_history),
+            # Heure à laquelle cet adoucisseur ouvre une nouvelle case
+            # journalière, apprise en l'observant (issue #10)
+            KEY_DAY_ROLLOVER:          self._heure_bascule_texte(),
+            "day_rollover_observations": len(self._bascule.observations),
         }

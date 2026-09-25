@@ -60,12 +60,18 @@
       "salt_autonomy_date": {
         "name": "Date fin autonomie"
       },
+      "day_rollover": {
+        "name": "Heure de bascule journalière"
+      },
       "debug_broadcast": {
         "name": "Trames BROADCAST (debug)"
       },
       "water_cutoff_today": {
         "name": "Coupures d'eau aujourd'hui",
         "unit_of_measurement": "coupures"
+      },
+      "water_meter": {
+        "name": "Compteur d'eau"
       }
     },
     "binary_sensor": {

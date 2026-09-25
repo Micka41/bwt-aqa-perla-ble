@@ -25,7 +25,7 @@ Native Home Assistant integration for the **BWT AQA Perla** water softener via B
 - 🔵 **Native BLE** — uses Home Assistant's Bluetooth stack
 - 📡 **Bluetooth proxy support** — works with ESPHome proxies (no USB BLE adapter needed)
 - 🔍 **Auto-discovery** — detects the BWT automatically via BLE service UUID
-- 📊 **16 entities** — salt level, water consumption, regenerations, water cutoffs, salt autonomy, diagnostics
+- 📊 **18 entities** — salt level, water consumption, regenerations, water cutoffs, salt autonomy, diagnostics
 - 🌍 **Multilingual** — French, English, German, Italian
 
 ## Sensors
@@ -35,6 +35,7 @@ Native Home Assistant integration for the **BWT AQA Perla** water softener via B
 | Salt level | % | Remaining salt percentage |
 | Salt remaining | kg | Remaining salt mass |
 | Salt capacity | kg | Total brine tank capacity |
+| Water meter | L | Cumulative water consumption, never resets — use it for the Water dashboard |
 | Consumption today | L | Water softened since midnight |
 | Consumption yesterday | L | Water softened the previous day |
 | Consumption 7 days | L | Water softened over the last 7 days |
@@ -46,6 +47,7 @@ Native Home Assistant integration for the **BWT AQA Perla** water softener via B
 | Average daily consumption 30 days | L | Average daily water consumption |
 | Last sync | — | Last successful BLE sync |
 | Firmware | — | Device firmware version |
+| Daily rollover time | — | Time at which the softener starts a new day in its daily buffer, learned automatically (diagnostic) |
 | BROADCAST frames (debug) | — | Raw BROADCAST frames (disabled by default) |
 | Salt alarm | — | "OK" or "Alarm" |
 
@@ -135,30 +137,52 @@ bluetooth_proxy:
 
 ## How it works
 
+The softener keeps two histories:
+
+- a **quarter-hour buffer** covering the last 30 days, to the litre;
+- a **daily buffer** covering up to 5 years, in tens of litres.
+
 The integration uses a **dual polling cycle**:
 
-- **Fast cycle (every 15 min):** reads BROADCAST characteristic + recent quarter-hour entries → ~5s BLE connection
-- **Full cycle (every 1h, forced at 04:00):** reads full history (quarters + daily) → ~20s BLE connection
+- **Fast cycle (every 15 min):** reads the BROADCAST characteristic and the new quarter-hour entries → ~5 s BLE connection
+- **Full cycle (every hour):** re-reads recent quarter-hours and the last 365 days → ~20 s BLE connection. The first one each day, from 00:20, reaches back 7 days of quarter-hours to compute yesterday and the last 7 days.
 
-Daily consumption is computed as an accumulator (`base` from full cycle + `delta` from fast cycle) to ensure it only increases during the day and resets at midnight.
+Today, yesterday and the last 7 days are all computed from quarter-hour data: calendar days from midnight to midnight, to the litre — the same figures as the BWT app.
 
-Yesterday's consumption is only updated once the BWT has consolidated the previous day (~04:00 AM) to avoid showing 0 during the night.
+### Water meter and the Water dashboard
+
+*Water meter* is a cumulative counter that never resets. It adds every quarter-hour exactly once, and persists across Home Assistant restarts. It starts at 0 when the integration is installed; quarter-hours missed while Home Assistant was stopped are caught up afterwards, as long as they are less than 30 days old.
+
+It is the sensor to use in **Settings → Dashboards → Energy → Water consumption**. *Consumption today* is meant for display: the quarter-hour from 23:45 to midnight is written by the softener at midnight, after the last reading of the day, so it never appears in that sensor.
+
+### The softener's own day
+
+The daily buffer does **not** start its days at midnight. Each softener opens its next daily slot at a time of its own — around 4:00 on one unit, around 9:30 on another — which is undocumented and unrelated to the regeneration time. The integration **learns it** by watching when the daily index moves, over the last 7 observations, and uses it to date the daily slots correctly. Until the first rollover has been observed (at most 24 hours after installation), slots are assumed to change at midnight.
+
+The learned time is shown by the *Daily rollover time* diagnostic sensor on the device page (e.g. `04:02`); it stays *Unknown* until the first rollover has been observed. Its `observations` attribute tells how many rollovers the value is based on.
 
 ## Services / Actions
 
-Three services are available to retrieve the complete history from the BWT device. Each service triggers a full BLE connection (~30-60 seconds).
+Three services are available to retrieve the complete history from the BWT device. The last 29 days come from the quarter-hour buffer (to the litre, midnight to midnight); older days from the daily buffer. Each call reads both buffers in full over BLE, which takes about 1 to 1½ minutes; a failed read is retried automatically.
 
 ### `bwt_aqa_perla_ble.get_total_consumption`
 
-Returns the total water consumption in liters since the device was put into service (up to 1825 days).
+Returns the total water consumption in liters since the device was put into service (up to 1825 days), **up to yesterday included** — today's consumption is already provided by the *Consumption today* sensor.
 
 ```json
 {
   "total_liters": 125430,
   "days_count": 365,
   "from_date": "2024-04-07",
-  "to_date": "2025-04-06"
+  "to_date": "2025-04-06",
+  "day_rollover_learned": true
 }
+```
+
+`day_rollover_learned` stays `false` until the integration has observed the softener's daily rollover — at most 24 hours after installation. Until then, the boundary between daily slots and quarter-hour data is assumed to be at midnight, and the total may be off by a few hours of consumption. If an automation accumulates this total, check the flag first:
+
+```jinja
+{% if result.day_rollover_learned %} … {% endif %}
 ```
 
 ### `bwt_aqa_perla_ble.get_history_consumption`

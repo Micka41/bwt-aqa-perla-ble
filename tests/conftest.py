@@ -5,11 +5,10 @@ afin que coordinator.py / sensor.py s'importent tels quels.
 """
 from __future__ import annotations
 
-import asyncio
 import dataclasses
 import sys
 import types
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -62,7 +61,7 @@ def _install_stubs() -> None:
     brc.establish_connection = AsyncMock()
 
     # -- homeassistant --
-    ha = mod("homeassistant")
+    mod("homeassistant")
 
     ha_core = mod("homeassistant.core")
     class HomeAssistant: ...
@@ -135,6 +134,8 @@ def _install_stubs() -> None:
             Store._backing[self.key] = data
         def async_delay_save(self, fn, delay=0):
             Store._backing[self.key] = fn()
+        async def async_remove(self):
+            Store._backing.pop(self.key, None)
         @classmethod
         def reset(cls):
             cls._backing = {}
@@ -254,6 +255,7 @@ def make_broadcast(
     vol_rege: int = 1980,
     alarme: bool = False,
     loop_jour: bool = False,
+    loop_quart: bool = False,
     version: tuple[int, int] = (1, 21),
     length: int = 15,
 ) -> bytes:
@@ -263,7 +265,11 @@ def make_broadcast(
     par 4 dans la trame (le décodeur divisera).
     """
     raw = qte_sel_g * 4 if version[0] >= 2 else qte_sel_g
-    flags = (0x01 if alarme else 0) | (0x04 if loop_jour else 0)
+    flags = (
+        (0x01 if alarme else 0)
+        | (0x02 if loop_quart else 0)
+        | (0x04 if loop_jour else 0)
+    )
     buf = bytearray(length)
     buf[0] = raw & 0xFF
     buf[1] = (raw >> 8) & 0xFF

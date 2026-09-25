@@ -187,6 +187,58 @@ def test_entite_debug_est_diagnostic_et_desactivee():
     assert desc.entity_registry_enabled_default is False
 
 
+
+def test_heure_de_bascule_est_diagnostic_et_active():
+    """L'heure de bascule apprise doit être visible sans rien activer."""
+    from custom_components.bwt_aqa_perla_ble import sensor as sensor_mod
+    from custom_components.bwt_aqa_perla_ble.const import KEY_DAY_ROLLOVER
+    desc = next(d for d in sensor_mod.SENSORS if d.key == KEY_DAY_ROLLOVER)
+    assert desc.entity_category == "diagnostic"
+    assert desc.entity_registry_enabled_default is True
+    assert desc.native_unit_of_measurement is None
+
+
+def _capteur(key, data):
+    from types import SimpleNamespace
+    from custom_components.bwt_aqa_perla_ble import sensor as sensor_mod
+    desc = next(d for d in sensor_mod.SENSORS if d.key == key)
+    coordinator = SimpleNamespace(address="AA:BB:CC:DD:EE:FF", data=data)
+    entry = SimpleNamespace(data={"name": "BWT"})
+    return sensor_mod.BwtSensor(coordinator, entry, desc)
+
+
+def test_heure_de_bascule_etat_et_attributs():
+    from custom_components.bwt_aqa_perla_ble.const import KEY_DAY_ROLLOVER
+    capteur = _capteur(KEY_DAY_ROLLOVER, {
+        KEY_DAY_ROLLOVER: "04:02", "day_rollover_observations": 5,
+    })
+    assert capteur.native_value == "04:02"
+    assert capteur.extra_state_attributes == {"observations": 5}
+
+
+def test_heure_de_bascule_inconnue_avant_apprentissage():
+    from custom_components.bwt_aqa_perla_ble.const import KEY_DAY_ROLLOVER
+    capteur = _capteur(KEY_DAY_ROLLOVER, {
+        KEY_DAY_ROLLOVER: None, "day_rollover_observations": 0,
+    })
+    assert capteur.native_value is None
+    assert capteur.extra_state_attributes == {"observations": 0}
+
+
+def test_entite_debug_ne_porte_plus_la_bascule():
+    from custom_components.bwt_aqa_perla_ble.const import KEY_DEBUG_BROADCAST
+    capteur = _capteur(KEY_DEBUG_BROADCAST, {
+        KEY_DEBUG_BROADCAST: "x", "debug_broadcast_frames": ["a", "b"],
+    })
+    assert capteur.extra_state_attributes == {"frames": ["a", "b"]}
+
+
+def test_autres_capteurs_sans_attributs():
+    from custom_components.bwt_aqa_perla_ble.const import KEY_SALT_PCT
+    assert _capteur(KEY_SALT_PCT, {KEY_SALT_PCT: 50}).extra_state_attributes is None
+    assert _capteur(KEY_SALT_PCT, None).extra_state_attributes is None
+
+
 def test_cles_de_capteurs_uniques():
     from custom_components.bwt_aqa_perla_ble import sensor as sensor_mod
     cles = [d.key for d in sensor_mod.SENSORS]

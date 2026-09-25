@@ -99,52 +99,65 @@ class TestAutonomie:
 
 # ── Consolidation hier / semaine ─────────────────────────────────────────────
 
-class TestConsolidation:
-    def _dict(self, jours):
-        return {j["date"]: j for j in jours}
+class TestHierSemaine:
+    """Hier et 7 jours, reconstitués depuis les quarts d'heure (issue #10).
 
-    def test_hier_consolide(self, coordinator, clock):
-        clock.set(hour=6)
-        jours = jours_fictifs(clock, 8, litres=150)
-        coordinator._mettre_a_jour_hier_semaine(self._dict(jours))
-        assert coordinator._conso_hier_stable == 150
-        assert coordinator._date_hier_stable != ""
+    Ils ne dépendent plus de l'heure à laquelle l'adoucisseur change de case
+    journalière — 4 h chez l'un, 9 h 30 chez l'autre.
+    """
 
-    def test_semaine_somme_sept_jours(self, coordinator, clock):
-        clock.set(hour=6)
-        jours = jours_fictifs(clock, 10, litres=100)
-        coordinator._mettre_a_jour_hier_semaine(self._dict(jours))
-        assert coordinator._conso_semaine_stable == 700
+    @staticmethod
+    def _quarts(clock, jours_avant: int, litres_par_jour: dict[int, int]):
+        """Quarts datés de J-jours_avant à maintenant ; litres répartis par jour."""
+        from datetime import timedelta
+        maintenant = clock.now()
+        debut = maintenant.replace(hour=0, minute=0) - timedelta(days=jours_avant)
+        quarts, t = [], debut
+        while t < maintenant:
+            jour = (maintenant.date() - t.date()).days
+            quarts.append({
+                "debut": t, "date": t.date().isoformat(),
+                "litres": litres_par_jour.get(jour, 0) // 96, "rege": False,
+            })
+            t += timedelta(minutes=15)
+        return quarts
 
-    def test_avant_4h_valeur_zero_ne_consolide_pas(self, coordinator, clock):
-        """Avant 04h00, 0 L signifie "pas encore consolidé" → on conserve l'ancienne."""
-        clock.set(hour=2)
-        coordinator._conso_hier_stable = 300
-        jours = jours_fictifs(clock, 8, litres=0)
-        jours[-1]["litres"] = 0
-        coordinator._mettre_a_jour_hier_semaine(self._dict(jours))
-        assert coordinator._conso_hier_stable == 300
+    def test_hier_au_litre_pres(self, coordinator, clock):
+        clock.set(hour=10)
+        q = self._quarts(clock, 2, {1: 96 * 3})
+        coordinator._calculer_hier_semaine(q, clock.now())
+        assert coordinator._conso_hier_stable == 288
 
-    def test_conso_faible_apres_4h_devient_disponible(self, coordinator, clock):
-        """Régression : < 10 L/j est stocké comme 0 mais reste une valeur valide."""
-        clock.set(hour=6)
-        jours = jours_fictifs(clock, 8, litres=0)
-        coordinator._mettre_a_jour_hier_semaine(self._dict(jours))
-        assert coordinator._date_hier_stable != "", "capteurs bloqués sur indisponible"
-        assert coordinator._conso_hier_stable == 0
+    def test_semaine_sept_jours_clos(self, coordinator, clock):
+        """7 jours pleins, de J-7 à J-1 ; la journée en cours n'en fait pas partie."""
+        clock.set(hour=10)
+        q = self._quarts(clock, 8, {j: 96 * j for j in range(0, 9)})
+        coordinator._calculer_hier_semaine(q, clock.now())
+        assert coordinator._conso_semaine_stable == 96 * sum(range(1, 8))
 
-    def test_valeur_provisoire_si_hier_absent(self, coordinator, clock):
-        """Hier manquant → on retombe sur la dernière valeur non nulle."""
-        clock.set(hour=2)
-        jours = jours_fictifs(clock, 8, litres=250)
-        d = self._dict(jours)
-        hier = (clock.now().date() - timedelta(days=1)).isoformat()
-        del d[hier]
-        coordinator._mettre_a_jour_hier_semaine(d)
-        assert coordinator._conso_hier_stable == 250
+    def test_valide_une_fois_par_jour(self, coordinator, clock):
+        clock.set(hour=10)
+        coordinator._calculer_hier_semaine(self._quarts(clock, 2, {}), clock.now())
+        assert coordinator._jour_hier_semaine == clock.now().date().isoformat()
 
+    def test_non_valide_avant_00h20(self, coordinator, clock):
+        """Juste après minuit, le dernier quart de la veille peut manquer encore."""
+        clock.set(hour=0, minute=10)
+        coordinator._calculer_hier_semaine(self._quarts(clock, 2, {1: 96}), clock.now())
+        assert coordinator._conso_hier_stable == 96          # calculé…
+        assert coordinator._jour_hier_semaine == ""          # …mais à refaire
 
-# ── Historique debug ─────────────────────────────────────────────────────────
+    def test_nouvelle_installation(self, coordinator, clock):
+        """Moins de 7 jours de quarts : on somme ce qui existe."""
+        clock.set(hour=10)
+        q = self._quarts(clock, 3, {j: 96 for j in range(0, 4)})
+        coordinator._calculer_hier_semaine(q, clock.now())
+        assert coordinator._conso_semaine_stable == 96 * 3
+
+    def test_indisponible_sans_quarts(self, coordinator, clock):
+        coordinator._calculer_hier_semaine([], clock.now())
+        assert coordinator._conso_hier_stable is None
+        assert coordinator._conso_semaine_stable is None
 
 class TestDebugHistory:
     def test_stocke_la_trame(self, coordinator, clock):
@@ -303,3 +316,25 @@ class TestCoupures:
         coordinator._coupures_jour_stable = 3
         result = coordinator._build_result(_decode_broadcast(make_broadcast()))
         assert result[KEY_CUTOFF_TODAY] == 3
+
+
+@pytest.mark.asyncio
+async def test_suppression_de_l_integration_efface_l_etat(coordinator, clock, store):
+    """Réinstaller doit repartir de zéro : ni bascule apprise, ni date d'autonomie."""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+    from custom_components.bwt_aqa_perla_ble import async_remove_entry
+    from custom_components.bwt_aqa_perla_ble.coordinator import BwtCoordinator
+
+    coordinator._calculer_autonomie(
+        _decode_broadcast(make_broadcast()), jours_fictifs(clock, 30)
+    )
+    assert store._backing, "l'état aurait dû être enregistré"
+
+    entree = SimpleNamespace(data={"address": "03:12:00:34:00:5E"})
+    await async_remove_entry(MagicMock(), entree)
+    assert not store._backing
+
+    neuf = BwtCoordinator(MagicMock(), "03:12:00:34:00:5E")
+    await neuf.async_load_stored_data()
+    assert neuf._autonomie_date is None and neuf._heure_bascule_texte() is None

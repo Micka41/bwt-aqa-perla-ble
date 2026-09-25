@@ -1,4 +1,4 @@
-# ![Icône BWT](./res/icon.png) BWT AQA Perla BLE - Home Assistant Integration
+# ![Icône BWT](./res/icon.png) BWT AQA Perla BLE - Intégration Home Assistant
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
 [![GitHub release](https://img.shields.io/github/release/Micka41/bwt-aqa-perla-ble.svg)](https://github.com/Micka41/bwt-aqa-perla-ble/releases)
@@ -25,7 +25,7 @@ Intégration native Home Assistant pour l'adoucisseur d'eau **BWT AQA Perla** vi
 - 🔵 **BLE natif** — utilise la pile Bluetooth de Home Assistant
 - 📡 **Support proxy Bluetooth** — fonctionne avec les proxys ESPHome (pas besoin d'adaptateur USB BLE)
 - 🔍 **Auto-découverte** — détecte automatiquement le BWT via son UUID de service BLE
-- 📊 **16 entités** — niveau de sel, consommation d'eau, régénérations, coupures d'eau, autonomie sel, données de diagnostic
+- 📊 **18 entités** — niveau de sel, consommation d'eau, régénérations, coupures d'eau, autonomie sel, données de diagnostic
 - 🌍 **Multilingue** — Français, Anglais, Allemand, Italien
 
 ## Capteurs
@@ -35,6 +35,7 @@ Intégration native Home Assistant pour l'adoucisseur d'eau **BWT AQA Perla** vi
 | Niveau de sel | % | Pourcentage de sel restant |
 | Sel restant | kg | Masse de sel restante |
 | Capacité sel | kg | Capacité totale du bac à sel |
+| Compteur d'eau | L | Consommation d'eau cumulée, jamais remise à zéro — à utiliser pour le tableau de bord Eau |
 | Consommation aujourd'hui | L | Eau adoucie depuis minuit |
 | Consommation hier | L | Eau adoucie la veille |
 | Consommation 7 jours | L | Eau adoucie sur les 7 derniers jours |
@@ -46,6 +47,7 @@ Intégration native Home Assistant pour l'adoucisseur d'eau **BWT AQA Perla** vi
 | Consommation moyenne 30 jours | L | Consommation quotidienne moyenne |
 | Dernière synchronisation | — | Dernière synchronisation BLE réussie |
 | Firmware | — | Version firmware de l'appareil |
+| Heure de bascule journalière | — | Heure à laquelle l'adoucisseur commence une nouvelle journée dans son buffer journalier, apprise automatiquement (diagnostic) |
 | Trames BROADCAST (debug) | — | Trames BROADCAST brutes (désactivée par défaut) |
 | Alarme sel | — | « OK » ou « Alarme » |
 
@@ -137,30 +139,52 @@ bluetooth_proxy:
 
 ## Fonctionnement
 
-L'intégration utilise un **cycle de scrutation double** :
+L'adoucisseur tient deux historiques :
 
-- **Cycle rapide (toutes les 15 min) :** lit la caractéristique BROADCAST + entrées récentes par quart d'heure → ~5s de connexion BLE
-- **Cycle complet (toutes les heures, forcé à 04h00) :** lit l'historique complet (quarts + journalier) → ~20s de connexion BLE
+- un **buffer par quart d'heure** couvrant les 30 derniers jours, au litre près ;
+- un **buffer journalier** couvrant jusqu'à 5 ans, en dizaines de litres.
 
-La consommation journalière est calculée comme un accumulateur (`base` du cycle complet + `delta` du cycle rapide) pour s'assurer qu'elle n'augmente que pendant la journée et se réinitialise à minuit.
+L'intégration utilise un **double cycle de scrutation** :
 
-La consommation d'hier n'est mise à jour qu'une fois que le BWT a consolidé le jour précédent (~04h00) pour éviter d'afficher 0 pendant la nuit.
+- **Cycle rapide (toutes les 15 min) :** lit la caractéristique BROADCAST et les nouveaux quarts d'heure → ~5 s de connexion BLE
+- **Cycle complet (toutes les heures) :** relit les quarts récents et les 365 derniers jours → ~20 s de connexion BLE. Le premier de chaque journée, dès 00 h 20, remonte 7 jours de quarts pour calculer hier et les 7 derniers jours.
+
+Aujourd'hui, hier et les 7 derniers jours sont tous calculés à partir des quarts d'heure : journées calendaires de minuit à minuit, au litre près — les mêmes chiffres que l'application BWT.
+
+### Compteur d'eau et tableau de bord Eau
+
+*Compteur d'eau* est un compteur cumulé qui ne revient jamais à zéro. Il additionne chaque quart d'heure exactement une fois, et conserve sa valeur aux redémarrages de Home Assistant. Il part de 0 à l'installation de l'intégration ; les quarts d'heure écoulés pendant un arrêt de Home Assistant sont rattrapés ensuite, tant qu'ils ont moins de 30 jours.
+
+C'est le capteur à utiliser dans **Paramètres → Tableaux de bord → Énergie → Consommation d'eau**. *Consommation aujourd'hui* est fait pour l'affichage : le quart d'heure de 23 h 45 à minuit est écrit par l'adoucisseur à minuit, après la dernière lecture de la journée, et n'apparaît donc jamais dans ce capteur.
+
+### La journée de l'adoucisseur
+
+Le buffer journalier ne commence **pas** ses journées à minuit. Chaque adoucisseur ouvre sa case journalière suivante à une heure qui lui est propre — vers 4 h sur un appareil, vers 9 h 30 sur un autre —, non documentée et sans rapport avec l'heure de régénération. L'intégration **l'apprend** en observant le moment où l'index journalier avance, sur les 7 dernières observations, et s'en sert pour dater correctement les cases journalières. Tant qu'aucune bascule n'a été observée (au plus 24 heures après l'installation), elle suppose un changement de case à minuit.
+
+L'heure apprise est affichée par le capteur de diagnostic *Heure de bascule journalière* sur la page de l'appareil (par exemple `04:02`) ; il reste *Inconnu* tant qu'aucune bascule n'a été observée. Son attribut `observations` indique sur combien de bascules repose la valeur.
 
 ## Services / Actions
 
-Trois services sont disponibles pour récupérer l'historique complet depuis l'appareil BWT. Chaque service déclenche une connexion BLE complète (~30-60 secondes).
+Trois services sont disponibles pour récupérer l'historique complet depuis l'appareil BWT. Les 29 derniers jours viennent du buffer par quart d'heure (au litre près, de minuit à minuit) ; les jours plus anciens, du buffer journalier. Chaque appel lit les deux buffers en entier, ce qui prend environ 1 minute à 1 minute 30 ; une lecture ratée est relancée automatiquement.
 
 ### `bwt_aqa_perla_ble.get_total_consumption`
 
-Retourne la consommation totale d'eau en litres depuis la mise en service de l'appareil (jusqu'à 1825 jours).
+Retourne la consommation totale d'eau en litres depuis la mise en service de l'appareil (jusqu'à 1825 jours), **jusqu'à hier inclus** — la consommation du jour est déjà fournie par le capteur *Consommation aujourd'hui*.
 
 ```json
 {
   "total_liters": 125430,
   "days_count": 365,
   "from_date": "2024-04-07",
-  "to_date": "2025-04-06"
+  "to_date": "2025-04-06",
+  "day_rollover_learned": true
 }
+```
+
+`day_rollover_learned` reste à `false` tant que l'intégration n'a pas observé le changement de case journalière de l'adoucisseur — au plus 24 heures après l'installation. D'ici là, le raccord entre cases journalières et quarts d'heure est placé à minuit par défaut, et le total peut être faux de quelques heures de consommation. Si une automatisation cumule ce total, vérifiez d'abord cet indicateur :
+
+```jinja
+{% if result.day_rollover_learned %} … {% endif %}
 ```
 
 ### `bwt_aqa_perla_ble.get_history_consumption`

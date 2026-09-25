@@ -6,9 +6,10 @@ import logging
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
+from homeassistant.helpers.storage import Store
 
-from .const import DOMAIN
-from .coordinator import BwtCoordinator
+from .const import DOMAIN, STORAGE_VERSION
+from .coordinator import BwtCoordinator, cle_stockage
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -60,3 +61,12 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         for service in (SERVICE_GET_TOTAL, SERVICE_GET_HISTORY_CONSO, SERVICE_GET_HISTORY_REGEN):
             hass.services.async_remove(DOMAIN, service)
     return unload_ok
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Supprime l'état persistant quand l'intégration est retirée.
+
+    Sans cela, une réinstallation retrouverait l'heure de bascule apprise et la
+    date de fin d'autonomie de l'installation précédente.
+    """
+    await Store(hass, STORAGE_VERSION, cle_stockage(entry.data["address"])).async_remove()
